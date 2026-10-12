@@ -56,3 +56,28 @@ Dziennik zapisuje się lokalnie do `signals_test.db`. Przy normalnym zamknięciu
 ### Ograniczenia
 
 To nadal tylko prosta heurystyka EMA + nagłówki, **nie wytrenowany i skalibrowany model predykcyjny**. Żaden z adapterów nie został w tym środowisku zweryfikowany prawdziwymi danymi z Alpaca / Capital.com / Yahoo. Streamlit Cloud nie uruchomi dziennika stale przy zamkniętej stronie. Wyniki nie powinny decydować o transakcjach na prawdziwe pieniądze.
+
+
+## Capital.com DEMO — naprawa błędu HTTPError (2026-10-12)
+
+Wybierz **Instrument → S&P 500 CFD (Capital.com DEMO)**. W aplikacji rozwiń
+**Diagnostyka Capital.com DEMO** i kliknij **Sprawdź logowanie i instrument US500**.
+Teraz program pokazuje etap awarii i kod HTTP bez ujawniania haseł czy kluczy:
+
+- `logowanie HTTP 401/403`: sprawdź, czy używasz konta DEMO, loginu konta i
+  **osobnego hasła API**, nadanego przy tworzeniu klucza w Capital.com (NIE hasła strony).
+- `świece 1 min HTTP 400/404`: sprawdź identyfikator `CAPITAL_EPIC` w
+  katalogu instrumentów swojego konta DEMO (S&P 500 jest zwykle `US500`).
+- `HTTP 429`: program odczekuje co najmniej 60 s zamiast ponawiać zapytania przy każdym odświeżeniu.
+- `HTTP 5xx`: możliwa niedostępność API dostawcy.
+- `sieć przy logowaniu` lub `sieć: świece 1 min`: problem połączenia, niekoniecznie kluczy.
+
+Program korzysta wyłącznie z adresu **Capital.com DEMO** i wywołań
+logowania oraz ODCZYTU danych. Nie wysyła prawdziwych ani próbnych zleceń
+kupna i sprzedaży. Godziny analiz US500 obejmują także poranek, jeśli dany
+rynek jest otwarty i broker udostępnia świeże dane.
+
+**Ważne ograniczenie**: bez prywatnych wartości zapisanych w Streamlit Secrets
+nie da się zewnętrznie sprawdzić, czy konto skutecznie loguje się do Capital.com.
+Testy `python -m pytest -q` są wyłącznie symulowane. Nadal konieczna jest
+trwała baza i osobny harmonogram do zbierania sygnałów po zamknięciu strony.
