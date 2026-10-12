@@ -41,7 +41,7 @@ with st.sidebar:
     symbol = INSTRUMENTS[instrument]
     if symbol == "CAPITAL_US500":
         source_choice = "Capital.com DEMO"
-        st.caption("Tylko Capital.com DEMO; nie mieszamy SPY z CFD.")
+        st.caption("Tylko Capital.com DEMO; nie mieszamy SPY z CFD. US500 można analizować także rano, jeśli broker prowadzi handel.")
     elif symbol == "ES=F":
         source_choice = "Yahoo"
         st.caption("Kontrakt ES=F w tej wersji: tylko Yahoo.")
@@ -84,20 +84,41 @@ def cached_prices(sym, wanted):
     return ds.yahoo_bars(sym), "Yahoo", warning
 
 
-def get_prices(sym, wanted):
-    if sym != "CAPITAL_US500":
-        return cached_prices(sym, wanted)
+def capital_client():
+    """Keep session tokens per browser session; do not expose credentials in UI."""
     if not all(CAPITAL_CREDS):
-        return pd.DataFrame(), "Capital.com DEMO", "Brakuje CAPITAL_API_KEY, CAPITAL_IDENTIFIER, CAPITAL_PASSWORD lub CAPITAL_EPIC w Secrets."
-    # Per browser session, not a globally shared DEMO API session.
-    fingerprint = CAPITAL_CREDS[:3] + (CAPITAL_CREDS[3],)
+        raise ValueError("Brakuje jednego z 4 wpisów CAPITAL_* w Streamlit Secrets")
+    fingerprint = CAPITAL_CREDS
     if st.session_state.get("capital_fingerprint") != fingerprint:
         st.session_state["capital_client"] = ds.CapitalDemo(*CAPITAL_CREDS)
         st.session_state["capital_fingerprint"] = fingerprint
+    return st.session_state["capital_client"]
+
+
+def safe_capital_error(exc):
+    if isinstance(exc, ds.CapitalAPIError):
+        msg = str(exc)
+        if exc.status in (401, 403) and exc.stage == "logowanie":
+            msg += ". Sprawdź DEMO, login i HASŁO UTWORZONE DLA KLUCZA API (nie zwykłe hasło konta)."
+        elif exc.status in (400, 404) and exc.stage in ("świece 1 min", "sprawdzanie EPIC"):
+            msg += ". Zweryfikuj CAPITAL_EPIC na koncie DEMO (np. US500)."
+        elif exc.status == 429:
+            msg += ". Limit API; nie odświeżaj na siłę, poczekaj."
+        elif exc.status is not None and exc.status >= 500:
+            msg += ". Możliwa awaria API Capital.com; spróbuj później."
+        return msg
+    if isinstance(exc, ValueError):
+        return "Ustawienia Capital.com DEMO: brak wymaganych pól lub nieprawidłowy EPIC."
+    return f"Capital DEMO — problem połączenia ({type(exc).__name__}); szczegóły bez danych konta."
+
+
+def get_prices(sym, wanted):
+    if sym != "CAPITAL_US500":
+        return cached_prices(sym, wanted)
     try:
-        return st.session_state["capital_client"].bars(), "Capital.com DEMO", ""
+        return capital_client().bars(), "Capital.com DEMO", ""
     except Exception as exc:
-        return pd.DataFrame(), "Capital.com DEMO", f"Błąd Capital.com DEMO: {type(exc).__name__}; sprawdź EPIC i DEMO Secrets."
+        return pd.DataFrame(), "Capital.com DEMO", safe_capital_error(exc)
 
 
 @st.cache_data(ttl=300)
@@ -173,6 +194,23 @@ def live():
         return
     if source_note:
         st.warning(source_note)
+    if symbol == "CAPITAL_US500":
+        with st.expander("Diagnostyka Capital.com DEMO (bez ujawniania kluczy)"):
+            st.caption("Przycisk testuje połączenie z DEMO i szczegóły instrumentu. "
+                       "Pokazuje tylko kod HTTP, nazwę rynku i kwotowania. Nie wysyła zleceń.")
+            if st.button("Sprawdź logowanie i instrument US500", key="capital_probe"):
+                try:
+                    details = capital_client().market_details()
+                    st.success(f"DEMO OK · EPIC: {details['epic']} · instrument: "
+                               f"{details['name']} · stan rynku: {details['market_status']}")
+                    st.write(f"Bid: {details['bid']} · Ask: {details['ask']} "
+                             f"· czas broker UTC: {details['update_time']}")
+                except Exception as exc:
+                    st.error(safe_capital_error(exc))
+            st.info("Jeżeli logowanie zwraca HTTP 401/403: CAPITAL_PASSWORD oznacza "
+                    "osobne hasło nadane przy tworzeniu klucza API. HTTP 400/404 przy świecach "
+                    "może oznaczać błędny EPIC. HTTP 429 to limit zapytań. "
+                    "Tylko konto DEMO.")
     if candles.empty:
         st.info("Brak świec. Sprawdź źródło danych lub godziny sesji.")
         return
