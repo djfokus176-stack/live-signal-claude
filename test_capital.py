@@ -109,3 +109,26 @@ def test_network_failure_safe(monkeypatch):
     with pytest.raises(ds.CapitalAPIError) as ex:
         client().bars()
     assert "secret_key" not in str(ex.value)
+
+
+def test_corrupted_capital_quotes_are_dropped():
+    import pandas as pd
+    def price(bid, ask):
+        return {"bid": bid, "ask": ask}
+    def record(bid, ask):
+        return {
+            "snapshotTimeUTC": "2026-10-12T14:01:00",
+            "openPrice": price(bid, ask),
+            "highPrice": price(bid+1, ask+1),
+            "lowPrice": price(bid-1, ask-1),
+            "closePrice": price(bid, ask),
+        }
+    clock = pd.Timestamp("2026-10-12T14:10:00Z")
+    for bad in (record(101, 100), record(-4, -3),
+                record(float("inf"), float("inf")),
+                record(float("nan"), 100)):
+        assert ds.capital_to_bars({"prices": [bad]}, now=clock).empty
+    good = record(99, 101)
+    df = ds.capital_to_bars({"prices": [good]}, now=clock)
+    assert len(df) == 1
+    assert df.iloc[0]["Close"] == 100
