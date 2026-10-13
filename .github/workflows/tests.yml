@@ -19,3 +19,12 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Run unit tests without any API secrets
         run: python -m pytest -q
+      - name: Smoke-test Streamlit launch offline
+        run: |
+          python - <<'PY'
+          from streamlit.testing.v1 import AppTest
+          app = AppTest.from_file("app.py", default_timeout=40).run()
+          if len(app.exception):
+              raise RuntimeError(str(app.exception))
+          print("Claude V3 dashboard started successfully")
+          PY
