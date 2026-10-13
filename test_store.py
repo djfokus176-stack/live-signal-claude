@@ -160,3 +160,28 @@ def test_two_simultaneous_clicks_create_only_one_6_horizon_test():
         outcomes = list(pool.map(click, range(2)))
     assert sorted(outcomes) == [0, 6]
     assert len(store.load("SPY", "Yahoo")) == 6
+
+
+def test_csv_backup_can_be_restored_without_duplicate_rows(tmp_path, monkeypatch):
+    ts = pd.Timestamp("2026-10-13 14:10:10", tz="UTC")
+    store.log_signal("CAPITAL_US500", "Capital.com DEMO", "LONG", 7800, ts)
+    original = store.load(model=None)
+    exported = original.to_csv(index=False).encode("utf-8-sig")
+    monkeypatch.setattr(store, "DB", str(tmp_path / "restored.db"))
+    assert store.restore_csv_backup(exported) == 6
+    assert store.restore_csv_backup(exported) == 0
+    restored = store.load(model=None)
+    assert len(restored) == 6
+    assert set(restored["status"]) == {"OCZEKUJE"}
+
+
+def test_csv_backup_rejects_corruption_without_partial_import(tmp_path, monkeypatch):
+    ts = pd.Timestamp("2026-10-13 14:10:10", tz="UTC")
+    store.log_signal("SPY", "Yahoo", "LONG", 100, ts)
+    original = store.load(model=None)
+    original.loc[0, "reference_price"] = -1
+    exported = original.to_csv(index=False).encode("utf-8")
+    monkeypatch.setattr(store, "DB", str(tmp_path / "recovery.db"))
+    with pytest.raises(ValueError):
+        store.restore_csv_backup(exported)
+    assert store.load(model=None).empty
