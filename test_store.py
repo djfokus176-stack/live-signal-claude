@@ -19,7 +19,7 @@ def isolated_db(tmp_path, monkeypatch):
 def test_roundtrip_long_and_cooldown():
     b = bars("2026-10-12 14:00", 120)
     ts = pd.Timestamp("2026-10-12 14:10:10", tz="UTC")
-    assert store.log_signal("SPY", "Yahoo", "LONG", 100.1, ts, cost_pct=0.02) == 6
+    assert store.log_signal("SPY", "Yahoo", "LONG", 100.1, ts, cost_pct=0.005) == 6
     assert store.log_signal("SPY", "Yahoo", "LONG", 100.1, ts + pd.Timedelta(minutes=5)) == 0
     assert store.log_signal("SPY", "Yahoo", "WAIT", 100.1, ts) == 0
     assert store.settle("SPY", "Yahoo", b, ts + pd.Timedelta(minutes=3)) == 1
