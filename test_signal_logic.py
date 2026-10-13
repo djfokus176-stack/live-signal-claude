@@ -49,3 +49,24 @@ def test_future_bar_cannot_change_direction():
     changed = evaluate(pd.concat([history, future]), now)
     assert changed["side"] == base["side"]
     assert changed["reference"] == base["reference"]
+
+
+def test_gap_with_fresh_last_bar_must_wait():
+    now = pd.Timestamp("2026-10-13T15:00:00Z")
+    history = candles(now, 0.08)
+    # Remove one M1 candle close to the current price - price is fresh,
+    # but the minimum 60-minute lookback is discontinuous.
+    history = history.drop(history.index[-12])
+    opinion = evaluate(history, now)
+    assert opinion["side"] == "WAIT"
+    assert "Przerwa" in opinion["reason"]
+    assert opinion["age_min"] == 0
+
+
+def test_nan_infinite_zero_closes_not_allowed():
+    now = pd.Timestamp("2026-10-13T15:00:00Z")
+    for bad_value in (0, -1, float("nan"), float("inf")):
+        history = candles(now, 0.08)
+        history.iloc[-1, history.columns.get_loc("Close")] = bad_value
+        result = evaluate(history, now)
+        assert result["side"] == "WAIT"
