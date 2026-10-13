@@ -24,12 +24,23 @@ def evaluate(bars: pd.DataFrame, now: pd.Timestamp) -> dict:
         return result
     close = pd.to_numeric(bars["Close"], errors="coerce").dropna()
     close = close.loc[~close.index.duplicated(keep="last")].sort_index()
+    close.index = pd.to_datetime(close.index, utc=True)
     close = close.loc[close.index + pd.Timedelta(minutes=1) <= now]
+    # A closed-minute close must be a valid executable price, not NaN/inf/zero.
+    close = close.loc[close.gt(0) & close.lt(float("inf"))]
     result["bars"] = len(close)
     if len(close) < 60:
         result["reason"] = "Brak 60 poprawnych, zakończonych świec."
         return result
 
+    # Do not mix pre-weekend/previous-session bars with the fresh few bars.
+    # A 60-bar EMA/RSI lookback must comprise 60 consecutive M1 candles.
+    window = close.tail(60)
+    gaps = window.index.to_series().diff().dropna()
+    if (gaps != pd.Timedelta(minutes=1)).any():
+        result["reason"] = ("Przerwa w historii minutowej (np. sesja/awaria). "
+                            "Czekamy na 60 kolejnych, zamkniętych świec.")
+        return result
     age = (now - (close.index[-1] + pd.Timedelta(minutes=1))).total_seconds()/60
     result["age_min"] = age
     if not math.isfinite(age) or age < -0.02 or age > 2.5:
