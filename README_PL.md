@@ -19,7 +19,7 @@
   Powtórzony kierunek w tej samej kombinacji symbol/źródło/model ma 15-minutową blokadę.
 - Przed prognozą sprawdzamy 60 kolejnych zamkniętych świec M1 oraz poprawność\n  cen, a brak ciągłości lub nieświeże dane oznaczają WAIT.\n- Po odświeżeniu zamknięte świece służą do rozliczenia: TRAFIONY/BLEDNY,
   BRAK_DANYCH, wynik netto po spreadzie CFD i dodatkowych kosztach.
-- Dziennik CSV na żądanie. Wiadomości RSS (opcjonalnie płatna analiza
+- Dziennik CSV na żądanie i **opcjonalne przywracanie eksportu CSV** po\n  restarcie bez duplikowania zapisów. Wiadomości RSS (opcjonalnie płatna analiza
   nagłówków przez OpenAI) jako **kontekst**, a nie predyktor.
 - Model V3 jest oddzielony od V2; **stare wyniki nadal zostają w starym modelu**,
   nie mieszamy ich w jednym rankingu.
@@ -64,7 +64,7 @@ Capital.com REST DEMO nie wykonuje żadnych zleceń.
    Zapis sygnałów oraz ich automatyczne rozliczanie wymagają otwartej aplikacji.
    Do pracy 24/7 i niezawodnego dziennika potrzebne są **osobny harmonogram**
    oraz **zewnętrzna baza** (np. Supabase), których V3 jeszcze nie posiada.
-   Pobieraj CSV przed restartami.
+   Pobieraj CSV przed restartami. Jeśli restart już usunął SQLite, wybierz\n   sekcję **Przywróć dziennik z pobranego CSV** i zatwierdź import.\n   Funkcja odtwarza tylko wcześniej zapisane wiersze i nie tworzy\n   żadnych typów wstecz.
 4. Ocena EMA/RSI/momentum **nie jest wytrenowanym ani skalibrowanym AI**.
    Samo 100 rozliczeń nie oznacza rentowności; sprawdzaj koszty,
    stabilność na nieznanych danych i dłuższą serię.
