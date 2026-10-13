@@ -33,6 +33,11 @@ def evaluate(bars: pd.DataFrame, now: pd.Timestamp) -> dict:
         result["reason"] = "Brak 60 poprawnych, zakończonych świec."
         return result
 
+    age = (now - (close.index[-1] + pd.Timedelta(minutes=1))).total_seconds()/60
+    result["age_min"] = age
+    if not math.isfinite(age) or age < -0.02 or age > 2.5:
+        result["reason"] = "Świece są nieaktualne albo nie zostały jeszcze zakończone. Bez gry."
+        return result
     # Do not mix pre-weekend/previous-session bars with the fresh few bars.
     # A 60-bar EMA/RSI lookback must comprise 60 consecutive M1 candles.
     window = close.tail(60)
@@ -40,11 +45,6 @@ def evaluate(bars: pd.DataFrame, now: pd.Timestamp) -> dict:
     if (gaps != pd.Timedelta(minutes=1)).any():
         result["reason"] = ("Przerwa w historii minutowej (np. sesja/awaria). "
                             "Czekamy na 60 kolejnych, zamkniętych świec.")
-        return result
-    age = (now - (close.index[-1] + pd.Timedelta(minutes=1))).total_seconds()/60
-    result["age_min"] = age
-    if not math.isfinite(age) or age < -0.02 or age > 2.5:
-        result["reason"] = "Świece są nieaktualne albo nie zostały jeszcze zakończone. Bez gry."
         return result
     ema9 = close.ewm(span=9, adjust=False).mean().iloc[-1]
     ema21 = close.ewm(span=21, adjust=False).mean().iloc[-1]
