@@ -1,5 +1,6 @@
 """Real market-data adapters. No live brokerage execution, only readings."""
 import time
+import math
 import pandas as pd
 import requests
 
@@ -55,14 +56,26 @@ def capital_to_bars(payload, now=None):
     rows = []
     for bar in payload.get("prices", []):
         try:
+            parts = [bar[name] for name in
+                     ("openPrice", "highPrice", "lowPrice", "closePrice")]
+            for part in parts:
+                bid, ask = float(part["bid"]), float(part["ask"])
+                if (not math.isfinite(bid) or not math.isfinite(ask)
+                        or bid <= 0 or ask <= 0 or bid > ask):
+                    raise ValueError("Invalid quote")
             def mid(part):
                 return (float(part["bid"]) + float(part["ask"])) / 2
+            mid_open, mid_high, mid_low, mid_close = [mid(p) for p in parts]
+            if (mid_high < mid_low or
+                    not mid_low <= mid_open <= mid_high or
+                    not mid_low <= mid_close <= mid_high):
+                raise ValueError("Invalid candle OHLC")
             rows.append({
                 "Date": pd.to_datetime(bar["snapshotTimeUTC"], utc=True),
-                "Open": mid(bar["openPrice"]),
-                "High": mid(bar["highPrice"]),
-                "Low": mid(bar["lowPrice"]),
-                "Close": mid(bar["closePrice"]),
+                "Open": mid_open,
+                "High": mid_high,
+                "Low": mid_low,
+                "Close": mid_close,
                 "OpenBid": float(bar["openPrice"]["bid"]),
                 "OpenAsk": float(bar["openPrice"]["ask"]),
                 "CloseBid": float(bar["closePrice"]["bid"]),
