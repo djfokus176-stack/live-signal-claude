@@ -230,7 +230,10 @@ def bot_and_log():
         candles = pd.DataFrame()
     candles = ds.closed_bars(candles, now) if not candles.empty else candles
     opinion = evaluate(candles, now)
-    st.caption("Model: EMA9/21 + RSI + momentum · ocena tylko po zamknięciu świecy M1.")
+    st.caption("Model: EMA9/21 + RSI + momentum · tylko zamknięte świece M1.")
+    st.caption(f"Bieżąca wersja: {store.MODEL} · wymagane horyzonty PAPER: "
+               f'{", ".join(str(h) for h in store.HORIZONS)} min · '
+               f'{opinion["bars"]} zamkniętych świec M1.')
     age = opinion.get("age_min")
     st.metric("Stan danych", "Świeże" if age is not None and 0 <= age <= 2.5 else "Brak świeżych")
     st.metric("Wiek świecy", f"{age:.1f} min" if age is not None else "—")
@@ -284,9 +287,13 @@ def bot_and_log():
         for line in assessed["reasons"]:
             st.caption("• " + line)
         if previous["saved"]:
-            st.success(f'Zapisano {previous["saved"]} horyzontów do rozliczenia.')
+            st.success(f'Zapisano {previous["saved"]}/{len(store.HORIZONS)} horyzontów '
+                       f'do rozliczenia. To jeden test kierunku, nie '
+                       f'{previous["saved"]} niezależnych transakcji.')
         if previous["message"]:
             st.info(previous["message"])
+        st.caption("Wyświetlana decyzja pochodzi z ostatniego kliknięcia, "
+                   "a nie z każdego automatycznego odświeżenia.")
     else:
         st.info("Wybierz moment, w którym chcesz sprawdzić rynek. "
                 "Bot zapisze test tylko po kliknięciu i tylko dla świeżych danych.")
@@ -324,10 +331,28 @@ def journal_panel():
     settled = df[df["status"].isin(["TRAFIONY", "BLEDNY", "REMIS"])] if not df.empty else df
     total = len(settled)
     wins = int((settled["status"] == "TRAFIONY").sum()) if total else 0
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Rozliczone horyzonty", total)
-    c2.metric("Trafione", f"{wins}/{total}")
-    c3.metric("Średnia netto", f'{settled["net_pct"].mean():+.4f}%' if total else "—")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Zapisane analizy", df["created_utc"].nunique() if not df.empty else 0)
+    c2.metric("Rozliczone horyzonty", total)
+    c3.metric("Trafione", f"{wins}/{total}")
+    c4.metric("Średnia netto", f'{settled["net_pct"].mean():+.4f}%' if total else "—")
+    st.caption(f"Wersja dziennika: {store.MODEL} · źródło: {source} · "
+               f'oczekiwane horyzonty jednej analizy: {", ".join(str(h) for h in store.HORIZONS)} min.')
+    if not df.empty:
+        latest = store.newest_horizon_coverage(df)
+        local_time = pd.Timestamp(latest["created_utc"]).tz_convert(
+            "Europe/Warsaw").strftime("%d.%m.%Y %H:%M:%S")
+        st.caption(f'Ostatnia zapisana analiza: {local_time} (czas polski) · '
+                   f'{len(latest["observed"])}/{len(latest["expected"])} '
+                   "horyzontów obecnych w bazie.")
+        if latest["missing"]:
+            st.warning(
+                "NIEPEŁNY ZAPIS: dla ostatniej prognozy brakuje horyzontów "
+                + ", ".join(str(h) for h in latest["missing"])
+                + " min. Nie dopisujemy ich po fakcie, ponieważ zmieniałoby to "
+                "historyczne rozliczenia. Następny zapis należy sprawdzić "
+                "po ponownym uruchomieniu aplikacji."
+            )
     if not total:
         st.info("Jeszcze brak rozliczonych testów w tej wersji algorytmu i źródle.")
     else:

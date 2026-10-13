@@ -168,3 +168,22 @@ def stats(symbol=None, source=None, model=MODEL):
     })
     result.index = [f"{i} min" for i in result.index]
     return result
+
+
+def newest_horizon_coverage(frame, expected=HORIZONS):
+    """Report recorded horizons without backfilling past predictions.
+
+    Different app hot-reloads can leave a running module with a previous
+    horizon configuration. Reporting the discrepancy is safer than adding
+    old 1m/3m signals retrospectively.
+    """
+    ordered = tuple(int(h) for h in expected)
+    if frame is None or frame.empty:
+        return {"created_utc": None, "expected": ordered,
+                "observed": (), "missing": ordered}
+    created = frame["created_utc"].max()
+    group = frame.loc[frame["created_utc"] == created]
+    observed = tuple(sorted({int(x) for x in group["horizon"]}))
+    missing = tuple(h for h in ordered if h not in observed)
+    return {"created_utc": created, "expected": ordered,
+            "observed": observed, "missing": missing}
