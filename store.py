@@ -11,7 +11,7 @@ DB = os.getenv("SIGNAL_DB", "signals_test.db")
 HORIZONS = (1, 3, 5, 15, 30, 60)
 MAX_GAP = pd.Timedelta(minutes=3)
 MISSING_AFTER = pd.Timedelta(hours=6)
-MODEL = "ema-rsi-click-v3"
+MODEL = "ema-rsi-click-v4-audit"
 
 
 @contextmanager
@@ -47,9 +47,15 @@ def log_signal(symbol, source, side, price, now, cost_pct=0.08,
     if side not in ("LONG", "SHORT"):
         return 0
     now = pd.Timestamp(now).tz_convert("UTC")
-    if cost_pct < 0:
-        raise ValueError("Koszt nie może być ujemny")
+    import math
+    if not math.isfinite(float(price)) or float(price) <= 0:
+        raise ValueError("Cena referencyjna musi być dodatnia i skończona")
+    if not math.isfinite(float(cost_pct)) or not 0 <= float(cost_pct) <= 2:
+        raise ValueError("Niepoprawny dodatkowy koszt 0–2%")
     with db() as c:
+        # Serialize the cooldown check and six inserts as one write transaction,
+        # also when two browser sessions click at nearly the same time.
+        c.execute("BEGIN IMMEDIATE")
         last = c.execute("""SELECT MAX(created_utc) FROM signals
             WHERE symbol=? AND source=? AND model=? AND side=?""",
             (symbol, source, model, side)).fetchone()[0]
@@ -96,7 +102,8 @@ def settle(symbol, source, bars, now, model=MODEL):
                     done += 1
                 continue
             entry_t = possible_entries.index[0]
-            if entry_t - created > MAX_GAP:
+            # Never fabricate a position that opens only after its planned exit.
+            if entry_t >= target or entry_t - created > MAX_GAP:
                 c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?", (signal_id,))
                 done += 1
                 continue
@@ -140,17 +147,23 @@ def settle(symbol, source, bars, now, model=MODEL):
 
 
 def load(symbol=None, source=None, model=MODEL):
-    filters = ["model=?"]
-    args = [model]
+    # model=None is an explicit all-version historical export;
+    # main performance table always uses only the current model.
+    filters = []
+    args = []
+    if model is not None:
+        filters.append("model=?")
+        args.append(model)
     if symbol:
         filters.append("symbol=?")
         args.append(symbol)
     if source:
         filters.append("source=?")
         args.append(source)
+    where_clause = " WHERE " + " AND ".join(filters) if filters else ""
     with db() as c:
-        return pd.read_sql_query("SELECT * FROM signals WHERE " +
-                " AND ".join(filters) + " ORDER BY id DESC", c, params=args)
+        return pd.read_sql_query("SELECT * FROM signals" + where_clause +
+                " ORDER BY id DESC", c, params=args)
 
 
 def stats(symbol=None, source=None, model=MODEL):
