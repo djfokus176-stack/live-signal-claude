@@ -4,7 +4,6 @@ import os
 
 import feedparser
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit.components.v1 as components
 import streamlit as st
 
@@ -57,7 +56,7 @@ TV_SYMBOLS = {
 
 with st.sidebar:
     st.markdown("### 🤖 CLAUDE LIVE SIGNAL")
-    st.caption("PROGRAM 2 · niezależny eksperyment · wersja V3")
+    st.caption("PROGRAM 2 · niezależny eksperyment · wersja V4 AUDYT")
     st.divider()
     # CFD first: US500 is traded during many morning hours as well as US session.
     names = ["S&P 500 CFD (Capital.com DEMO)", "S&P 500 ETF (SPY)",
@@ -235,8 +234,15 @@ def bot_and_log():
                f'{", ".join(str(h) for h in store.HORIZONS)} min · '
                f'{opinion["bars"]} zamkniętych świec M1.')
     age = opinion.get("age_min")
-    st.metric("Stan danych", "Świeże" if age is not None and 0 <= age <= 2.5 else "Brak świeżych")
+    data_recent = age is not None and 0 <= age <= 2.5
+    history_ok = data_recent and opinion["bars"] >= 60 and not (
+        "Przerwa" in opinion["reason"])
+    st.metric("Stan danych", "Gotowe do analizy" if history_ok else
+              "Świece świeże, historia niepełna" if data_recent else
+              "Brak świeżych danych")
     st.metric("Wiek świecy", f"{age:.1f} min" if age is not None else "—")
+    if opinion["side"] == "WAIT" and not history_ok:
+        st.warning(opinion["reason"])
     st.session_state["claude_last_source_" + symbol] = actual_source
     if not candles.empty:
         # Passive settlement is safe; no forecast is silently logged.
@@ -275,15 +281,20 @@ def bot_and_log():
         assessed = previous["analysis"]
         direction = assessed["side"]
         time_pl = pd.Timestamp(previous["time"]).tz_convert("Europe/Warsaw").strftime("%H:%M:%S")
-        if direction == "LONG":
-            st.success(f"🟢 LONG — test PAPER · {time_pl}")
-        elif direction == "SHORT":
-            st.error(f"🔴 SHORT — test PAPER · {time_pl}")
+        if previous["saved"] and direction == "LONG":
+            st.success(f"🟢 LONG — NOWY test PAPER zapisany · {time_pl}")
+        elif previous["saved"] and direction == "SHORT":
+            st.error(f"🔴 SHORT — NOWY test PAPER zapisany · {time_pl}")
+        elif direction in ("LONG", "SHORT"):
+            st.info(f"{direction} — analiza {time_pl}; NIE zapisano nowego testu")
         else:
             st.warning(f"🟡 WAIT — bez testowego wejścia · {time_pl}")
         st.metric("Indeks kierunku LONG (nie % trafień)",
                   f'{assessed["score_long"]}/100')
         st.write(assessed["reason"])
+        if assessed["reference"] is not None:
+            st.caption(f'Cena odniesienia u źródła bota: {assessed["reference"]:,.2f}. '
+                       "To nie jest cena wykonania transakcji.")
         for line in assessed["reasons"]:
             st.caption("• " + line)
         if previous["saved"]:
@@ -302,6 +313,7 @@ def bot_and_log():
 
 
 st.title("CLAUDE LIVE SIGNAL — PROGRAM 2")
+st.caption("V4 AUDYT · źródła cen kontrolowane · rozliczenia PAPER bez przyszłych danych")
 st.caption("Duże świece + przycisk analizy + niezależne wyniki PAPER. "
            "Nie zmienia PROGRAMU 1: SP500 AI PRO.")
 
@@ -362,10 +374,47 @@ def journal_panel():
     if not df.empty:
         st.dataframe(df[["created_utc", "side", "horizon", "status", "net_pct"]],
                      use_container_width=True, hide_index=True)
-    st.download_button("⬇️ Pobierz dziennik CSV (kopia wyników)",
+    st.download_button("⬇️ Pobierz aktualny dziennik CSV",
                        data=df.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="claude_paper_v3.csv", mime="text/csv",
+                       file_name="claude_paper_v4.csv", mime="text/csv",
                        use_container_width=False)
+    # Never mix V3 and V4 outcomes in the same success percentage.
+    all_history = store.load(symbol, source, model=None)
+    old = all_history.loc[all_history["model"] != store.MODEL]
+    if not old.empty:
+        with st.expander("📚 Historia starszych wersji algorytmu (osobno)"):
+            st.caption("Wyników V3 nie łączymy ze skutecznością V4. "
+                       "Poprzednie sygnały w lokalnej bazie pozostały.")
+            st.dataframe(old[["model", "created_utc", "side",
+                              "horizon", "status", "net_pct"]],
+                         use_container_width=True, hide_index=True)
+    st.download_button("⬇️ Pobierz WSZYSTKIE wersje z dostępnej bazy",
+                       data=all_history.to_csv(index=False).encode("utf-8-sig"),
+                       file_name="claude_paper_all_versions.csv",
+                       mime="text/csv", use_container_width=False)
+    with st.expander("💾 Przywróć dziennik z pobranego CSV — bez nowego konta"):
+        st.caption("Opcjonalna kopia ratunkowa po restarcie Streamlit. "
+                   "Wybierz tylko plik CSV pobrany wcześniej z tego programu. "
+                   "Powtarzany import nie dubluje testów. To nie jest "
+                   "automatyczna, trwała baza.")
+        restored = st.file_uploader("Wybierz wcześniej pobrany plik CSV",
+                                    type=["csv"], key="restore_claude_csv")
+        if restored is not None and st.button("Sprawdź i przywróć dane z CSV",
+                                             key="restore_claude_confirm"):
+            try:
+                restored_count = store.restore_csv_backup(restored.getvalue())
+                st.session_state["claude_restore_notice"] = (
+                    f"Przywrócono {restored_count} brakujących wierszy "
+                    "(istniejące wpisy bez zmian).")
+                st.rerun(scope="fragment")
+            except (ValueError, TypeError, OverflowError) as exc:
+                st.error(f"Nieprawidłowy plik kopii: {exc}")
+            except Exception:
+                st.error("Nie udało się przywrócić bazy; nie dopisujemy "
+                         "niezweryfikowanych wpisów.")
+        if st.session_state.get("claude_restore_notice"):
+            st.success(st.session_state["claude_restore_notice"])
+
 
 
 journal_panel()

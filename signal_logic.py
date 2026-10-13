@@ -22,10 +22,19 @@ def evaluate(bars: pd.DataFrame, now: pd.Timestamp) -> dict:
     if bars is None or len(bars) < 60 or "Close" not in bars:
         result["reason"] = "Potrzebujemy co najmniej 60 zamkniętych świec M1."
         return result
-    close = pd.to_numeric(bars["Close"], errors="coerce").dropna()
+    close = pd.to_numeric(bars["Close"], errors="coerce")
     close = close.loc[~close.index.duplicated(keep="last")].sort_index()
+    close.index = pd.to_datetime(close.index, utc=True)
     close = close.loc[close.index + pd.Timedelta(minutes=1) <= now]
     result["bars"] = len(close)
+    # Do not silently drop a corrupted most-recent candle and evaluate a
+    # different past moment while telling the user the data are live.
+    if len(close) >= 60:
+        window_prices = close.tail(60)
+        if not ((window_prices.gt(0) & window_prices.lt(float("inf"))).all()):
+            result["reason"] = "Niepoprawna cena w ostatnich 60 świecach. Bez testu."
+            return result
+    close = close.loc[close.gt(0) & close.lt(float("inf"))].tail(120)
     if len(close) < 60:
         result["reason"] = "Brak 60 poprawnych, zakończonych świec."
         return result
@@ -34,6 +43,14 @@ def evaluate(bars: pd.DataFrame, now: pd.Timestamp) -> dict:
     result["age_min"] = age
     if not math.isfinite(age) or age < -0.02 or age > 2.5:
         result["reason"] = "Świece są nieaktualne albo nie zostały jeszcze zakończone. Bez gry."
+        return result
+    # Do not mix pre-weekend/previous-session bars with the fresh few bars.
+    # A 60-bar EMA/RSI lookback must comprise 60 consecutive M1 candles.
+    window = close.tail(60)
+    gaps = window.index.to_series().diff().dropna()
+    if (gaps != pd.Timedelta(minutes=1)).any():
+        result["reason"] = ("Przerwa w historii minutowej (np. sesja/awaria). "
+                            "Czekamy na 60 kolejnych, zamkniętych świec.")
         return result
     ema9 = close.ewm(span=9, adjust=False).mean().iloc[-1]
     ema21 = close.ewm(span=21, adjust=False).mean().iloc[-1]
