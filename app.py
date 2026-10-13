@@ -1,16 +1,18 @@
 """Independent PAPER research app: no trading or brokerage order access."""
-import math
+import json
 import os
 
 import feedparser
 import pandas as pd
 import plotly.graph_objects as go
+import streamlit.components.v1 as components
 import streamlit as st
 
 import data_sources as ds
 import store
+from signal_logic import evaluate
 
-st.set_page_config(page_title="Live Signal AI Test", layout="wide")
+st.set_page_config(page_title="CLAUDE LIVE SIGNAL • PAPER", page_icon="📈", layout="wide")
 
 INSTRUMENTS = {
     "S&P 500 ETF (SPY)": "SPY",
@@ -35,29 +37,47 @@ OPENAI_KEY = secret("OPENAI_API_KEY")
 CAPITAL_CREDS = tuple(secret(k) for k in
     ("CAPITAL_API_KEY", "CAPITAL_IDENTIFIER", "CAPITAL_PASSWORD", "CAPITAL_EPIC"))
 
-with st.sidebar:
-    st.header("Live Signal AI Test")
-    instrument = st.selectbox("Instrument", list(INSTRUMENTS))
-    symbol = INSTRUMENTS[instrument]
-    if symbol == "CAPITAL_US500":
-        source_choice = "Capital.com DEMO"
-        st.caption("Tylko Capital.com DEMO; nie mieszamy SPY z CFD. US500 można analizować także rano, jeśli broker prowadzi handel.")
-    elif symbol == "ES=F":
-        source_choice = "Yahoo"
-        st.caption("Kontrakt ES=F w tej wersji: tylko Yahoo.")
-    else:
-        source_choice = st.selectbox("Źródło notowań",
-            ["Auto (Alpaca → Yahoo)", "Yahoo", "Alpaca IEX"])
-    refresh = st.slider("Odświeżanie (sek.)", 20, 120, 30, step=10)
-    cost = st.number_input("Dodatkowy koszt ROUND TRIP (% ceny)",
-                           min_value=0.0, max_value=2.0, value=0.08, step=0.01,
-                           help="SPY/QQQ: uproszczony koszt transakcyjny. CFD: spread z bid/ask jest już liczony, tutaj dodatkowa prowizja i poślizg.")
-    use_gpt = st.checkbox("Analiza nagłówków przez OpenAI (możliwy koszt API)",
-                          value=False, disabled=not bool(OPENAI_KEY))
-    model = st.text_input("Model OpenAI", value="gpt-4o-mini",
-                          disabled=not use_gpt)
-    st.caption("Test PAPER. Prawdziwe zlecenia nie są wysyłane.")
 
+st.markdown("""
+<style>
+[data-testid="stAppViewContainer"] {background:#0b1020;}
+[data-testid="stSidebar"] {background:#171d2d;}
+.block-container {padding-top:1.0rem;max-width:1900px;padding-left:1.4rem;padding-right:1.4rem;}
+[data-testid="stMetric"] {background:#18243a;border:1px solid #30425b;border-radius:12px;padding:12px;}
+[data-testid="stMetricValue"] {font-size:1.65rem;}
+</style>
+""", unsafe_allow_html=True)
+
+TV_SYMBOLS = {
+    "CAPITAL_US500": "CAPITALCOM:US500",
+    "SPY": "AMEX:SPY",
+    "QQQ": "NASDAQ:QQQ",
+    "ES=F": "CME_MINI:ES1!",
+}
+
+with st.sidebar:
+    st.markdown("### 🤖 CLAUDE LIVE SIGNAL")
+    st.caption("PROGRAM 2 · niezależny eksperyment · wersja V3")
+    st.divider()
+    # CFD first: US500 is traded during many morning hours as well as US session.
+    names = ["S&P 500 CFD (Capital.com DEMO)", "S&P 500 ETF (SPY)",
+             "Nasdaq ETF (QQQ)", "S&P 500 futures (ES=F)"]
+    instrument = st.selectbox("Co obserwujemy?", names, index=0)
+    symbol = INSTRUMENTS[instrument]
+    interval = st.selectbox("Świece na wykresie", ["1m", "3m", "5m", "15m", "30m", "60m"], index=2)
+    source_choice = "Capital.com DEMO" if symbol == "CAPITAL_US500" else (
+        "Yahoo" if symbol == "ES=F" else st.selectbox("Dane do analizy bota",
+            ["Auto (Alpaca → Yahoo)", "Alpaca IEX", "Yahoo"]))
+    refresh = st.slider("Odświeżanie analizy (sek.)", 20, 120, 30, step=10)
+    cost = st.number_input("Koszt dodatkowy ROUND TRIP (%)", min_value=0.0,
+                           max_value=2.0, value=0.08, step=0.01)
+    st.caption("Dla CFD spread bid/ask jest już uwzględniany w teście. "
+               "Ten koszt to dodatkowe opłaty i poślizg.")
+    st.divider()
+    use_gpt = st.checkbox("Dodatkowa analiza newsów przez OpenAI (płatne API)",
+                          value=False, disabled=not bool(OPENAI_KEY))
+    model = st.text_input("Model OpenAI", value="gpt-4o-mini", disabled=not use_gpt)
+    st.caption("Brak realnych transakcji. Oddzielny dziennik i wersja modelu.")
 
 @st.cache_data(ttl=20, show_spinner=False)
 def cached_prices(sym, wanted):
@@ -162,104 +182,194 @@ def news_score(titles, sym, enabled, model):
         return 0.0, "Brak oceny wiadomości"
 
 
-def make_signal(bars, sentiment, now):
-    close = bars["Close"].astype(float)
-    if len(close) < 30:
-        return "WAIT", 0.0, 0.0, None, "Za mało świec"
-    ema9 = close.ewm(span=9, adjust=False).mean().iloc[-1]
-    ema21 = close.ewm(span=21, adjust=False).mean().iloc[-1]
-    trend = (ema9 / ema21 - 1) * 100
-    score = 0.6 * math.tanh(trend / 0.03) + 0.4 * sentiment
-    age = (now - (bars.index[-1] + pd.Timedelta(minutes=1))).total_seconds() / 60
-    if age > 5 or age < -0.01:
-        return "WAIT", score, trend, age, "Brak świeżych, zamkniętych świec; bez sygnału"
-    if score > 0.35:
-        return "LONG", score, trend, age, "Wzrostowe EMA + ocena nagłówków (heurystyka)"
-    if score < -0.35:
-        return "SHORT", score, trend, age, "Spadkowe EMA + ocena nagłówków (heurystyka)"
-    return "WAIT", score, trend, age, "Brak wystarczającego sygnału"
 
-
-st.title("Live Signal AI Test — osobny eksperyment")
-st.caption("Nie jest połączony z poprzednim SP500 Signal AI Pro. Osobny dziennik oraz oddzielne instrumenty/źródła.")
+def tv_widget(tv_symbol, interval):
+    """TradingView iframe owns displayed chart; broker bars are used only by model."""
+    interval_code = {"1m": "1", "3m": "3", "5m": "5",
+                     "15m": "15", "30m": "30", "60m": "60"}[interval]
+    options = {
+        "autosize": False, "width": "100%", "height": 650,
+        "symbol": tv_symbol, "interval": interval_code,
+        "timezone": "Europe/Warsaw", "theme": "dark", "locale": "pl",
+        "style": "1", "backgroundColor": "#10192c",
+        "gridColor": "rgba(255,255,255,.05)",
+        "allow_symbol_change": False, "hide_top_toolbar": False,
+        "hide_side_toolbar": False, "save_image": False,
+        "withdateranges": True, "calendar": False,
+    }
+    html = """<style>
+      html,body{background:#10192c;padding:0;margin:0;width:100%;height:100%}
+      .tradingview-widget-container{height:684px;width:100%;}
+      .tradingview-widget-container__widget{height:650px;width:100%;}
+      .tradingview-widget-copyright{padding-top:5px;font:12px sans-serif;color:#8da8c7}
+    </style>
+    <div class="tradingview-widget-container">
+      <div class="tradingview-widget-container__widget"></div>
+      <div class="tradingview-widget-copyright">
+        <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer"
+           style="color:#96c8ff">Wykres TradingView — może mieć opóźnienie</a>
+      </div>
+      <script type="text/javascript" async
+       src="https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js"
+       >__OPTIONS__</script>
+    </div>""".replace("__OPTIONS__", json.dumps(options))
+    components.html(html, height=696, scrolling=False)
 
 
 @st.fragment(run_every=refresh)
-def live():
+def bot_and_log():
     now = pd.Timestamp.now(tz="UTC")
     try:
-        candles, actual_source, source_note = get_prices(symbol, source_choice)
-    except Exception as exc:
-        st.error("Nie udało się pobrać cen: " + type(exc).__name__)
-        return
-    if source_note:
-        st.warning(source_note)
-    if symbol == "CAPITAL_US500":
-        with st.expander("Diagnostyka Capital.com DEMO (bez ujawniania kluczy)"):
-            st.caption("Przycisk testuje połączenie z DEMO i szczegóły instrumentu. "
-                       "Pokazuje tylko kod HTTP, nazwę rynku i kwotowania. Nie wysyła zleceń.")
-            if st.button("Sprawdź logowanie i instrument US500", key="capital_probe"):
-                try:
-                    details = capital_client().market_details()
-                    st.success(f"DEMO OK · EPIC: {details['epic']} · instrument: "
-                               f"{details['name']} · stan rynku: {details['market_status']}")
-                    st.write(f"Bid: {details['bid']} · Ask: {details['ask']} "
-                             f"· czas broker UTC: {details['update_time']}")
-                except Exception as exc:
-                    st.error(safe_capital_error(exc))
-            st.info("Jeżeli logowanie zwraca HTTP 401/403: CAPITAL_PASSWORD oznacza "
-                    "osobne hasło nadane przy tworzeniu klucza API. HTTP 400/404 przy świecach "
-                    "może oznaczać błędny EPIC. HTTP 429 to limit zapytań. "
-                    "Tylko konto DEMO.")
-    if candles.empty:
-        st.info("Brak świec. Sprawdź źródło danych lub godziny sesji.")
-        return
-    candles = ds.closed_bars(candles, now=now)
-    if candles.empty:
-        st.info("Brak zakończonych świec minutowych.")
-        return
-    titles = get_news(symbol)
-    sentiment, reason = news_score(titles, symbol, use_gpt, model)
-    side, score, trend, age, note = make_signal(candles, sentiment, now)
+        candles, actual_source, warning = get_prices(symbol, source_choice)
+        if warning:
+            st.warning(warning)
+    except Exception:
+        candles, actual_source = pd.DataFrame(), source_choice
+        st.error("Nie udało się pobrać danych bota. Wykres TradingView działa niezależnie.")
+    if candles is None:
+        candles = pd.DataFrame()
+    candles = ds.closed_bars(candles, now) if not candles.empty else candles
+    opinion = evaluate(candles, now)
+    st.caption("Model: EMA9/21 + RSI + momentum · ocena tylko po zamknięciu świecy M1.")
+    age = opinion.get("age_min")
+    st.metric("Stan danych", "Świeże" if age is not None and 0 <= age <= 2.5 else "Brak świeżych")
+    st.metric("Wiek świecy", f"{age:.1f} min" if age is not None else "—")
+    st.session_state["claude_last_source_" + symbol] = actual_source
+    if not candles.empty:
+        # Passive settlement is safe; no forecast is silently logged.
+        try:
+            store.settle(symbol, actual_source, candles, now)
+        except Exception:
+            st.warning("Rozliczanie chwilowo niedostępne (baza).")
+    if symbol == "CAPITAL_US500" and candles.empty:
+        st.caption("Nie ma potwierdzonego odczytu US500 przez API. Sprawdź "
+                   "diagnostykę Capital.com poniżej. Nie analizujemy cen TV jako cen brokera.")
 
-    store.settle(symbol, actual_source, candles, now)
-    stored = store.log_signal(symbol, actual_source, side,
-                              float(candles["Close"].iloc[-1]), now, cost)
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Sygnał PAPER", side)
-    col2.metric("Cena (mid dla CFD)", f"{candles['Close'].iloc[-1]:,.2f}")
-    col3.metric("Ocena (nie prawdopodobieństwo)", f"{score:+.2f}")
-    col4.metric("Wiadomości", f"{sentiment:+.2f}")
-    st.caption(f"{note} | EMA9/21: {trend:+.3f}% | wiek świecy: {age:.1f} min | źródło: {actual_source} | zapisane: {stored} wiersze")
+    clicked = st.button("🤖 ANALIZUJ TERAZ — LONG czy SHORT?",
+                        use_container_width=True, type="primary")
+    current_key = f"{symbol}|{actual_source}"
+    if clicked:
+        result = dict(opinion)
+        saved = 0
+        issue = ""
+        if result["side"] in ("LONG", "SHORT") and result["reference"] is not None:
+            try:
+                saved = store.log_signal(symbol, actual_source, result["side"],
+                                         result["reference"], now, cost)
+                if saved == 0:
+                    issue = "Podobny sygnał już zapisano w ostatnich 15 minutach."
+            except Exception:
+                issue = "Błąd zapisu; nie zakładamy, że sygnał zapisano."
+        else:
+            issue = "WAIT — nie zapisujemy hipotetycznego wejścia."
+        st.session_state["last_bot_v3"] = {
+            "key": current_key, "analysis": result, "time": now.isoformat(),
+            "saved": saved, "message": issue,
+        }
 
-    graph_data = candles.tail(120)
-    fig = go.Figure(go.Candlestick(x=graph_data.index,
-        open=graph_data["Open"], high=graph_data["High"],
-        low=graph_data["Low"], close=graph_data["Close"], name=symbol))
-    for span, color in ((9, "#2563eb"), (21, "#f59e0b")):
-        fig.add_trace(go.Scatter(x=graph_data.index,
-            y=candles["Close"].ewm(span=span, adjust=False).mean().tail(120),
-            name=f"EMA{span}", line=dict(color=color, width=1.5)))
-    fig.update_layout(height=450, xaxis_rangeslider_visible=False,
-                      margin=dict(l=0, r=0, t=10, b=0))
-    st.plotly_chart(fig, width="stretch")
-
-    st.subheader("Rozliczenia sygnałów — PAPER")
-    st.caption("Wynik po kosztach; spread CFD liczony z bid/ask. Sumy procentów to suma obserwacji, NIE wynik portfela ani ROI. Sygnały na horyzontach mogą się pokrywać.")
-    summary = store.stats(symbol, actual_source)
-    if summary.empty:
-        st.info("Brak rozliczeń w wybranym źródle danych.")
+    previous = st.session_state.get("last_bot_v3")
+    if previous and previous.get("key") == current_key:
+        assessed = previous["analysis"]
+        direction = assessed["side"]
+        time_pl = pd.Timestamp(previous["time"]).tz_convert("Europe/Warsaw").strftime("%H:%M:%S")
+        if direction == "LONG":
+            st.success(f"🟢 LONG — test PAPER · {time_pl}")
+        elif direction == "SHORT":
+            st.error(f"🔴 SHORT — test PAPER · {time_pl}")
+        else:
+            st.warning(f"🟡 WAIT — bez testowego wejścia · {time_pl}")
+        st.metric("Indeks kierunku LONG (nie % trafień)",
+                  f'{assessed["score_long"]}/100')
+        st.write(assessed["reason"])
+        for line in assessed["reasons"]:
+            st.caption("• " + line)
+        if previous["saved"]:
+            st.success(f'Zapisano {previous["saved"]} horyzontów do rozliczenia.')
+        if previous["message"]:
+            st.info(previous["message"])
     else:
-        st.dataframe(summary, width="stretch")
-        if summary["rozliczone"].min() < 100:
-            st.warning("Mniej niż 100 rozliczeń na horyzont — zbyt mała próba na ocenę metody.")
-    journal = store.load(symbol, actual_source)
-    st.download_button("Pobierz dziennik CSV", journal.to_csv(index=False).encode("utf-8-sig"),
-        file_name="live_signal_test_journal.csv", mime="text/csv")
-    with st.expander(f"Wiadomości — {reason}"):
-        for headline in titles:
-            st.write("•", headline)
+        st.info("Wybierz moment, w którym chcesz sprawdzić rynek. "
+                "Bot zapisze test tylko po kliknięciu i tylko dla świeżych danych.")
+    st.caption("Ocena nie jest prawdopodobieństwem wygranej. "
+               "System nie ma jeszcze potwierdzonej przewagi po kosztach.")
 
 
-live()
-st.warning("Tylko badania PAPER. Nie wysyła zleceń. Zbieranie nowych sygnałów wymaga aktywnej sesji Streamlit; SQLite w Community Cloud nie zapewnia trwałości po restarcie.")
+st.title("CLAUDE LIVE SIGNAL — PROGRAM 2")
+st.caption("Duże świece + przycisk analizy + niezależne wyniki PAPER. "
+           "Nie zmienia PROGRAMU 1: SP500 AI PRO.")
+
+chart_col, assistant_col = st.columns([3.0, 1.3], gap="medium")
+with chart_col:
+    tv_widget(TV_SYMBOLS[symbol], interval)
+    st.caption("Wykres dostarcza TradingView; bot korzysta z innego, wskazanego w menu źródła "
+               "danych. Ceny i godziny aktualizacji mogą się różnić.")
+with assistant_col:
+    st.subheader("Twój bot")
+    bot_and_log()
+
+st.divider()
+st.subheader("📒 Dziennik i rozliczenia — tylko PROGRAM 2")
+st.caption("Zapisujemy godzinę sygnału i kierunek. Rozliczamy netto na "
+           "1, 3, 5, 15, 30 i 60 minutach. W przypadku braku danych wynik "
+           "pozostaje niepotwierdzony. Sumy procentów nie są ROI portfela.")
+
+@st.fragment(run_every=refresh)
+def journal_panel():
+    # Record histories are isolated by symbol, price source and model version.
+    source = ("Capital.com DEMO" if symbol == "CAPITAL_US500"
+              else "Yahoo" if source_choice == "Yahoo" or symbol == "ES=F"
+              else "Alpaca IEX" if source_choice == "Alpaca IEX"
+              else (st.session_state.get("claude_last_source_" + symbol, "Alpaca IEX")))
+    df = store.load(symbol, source)
+    settled = df[df["status"].isin(["TRAFIONY", "BLEDNY", "REMIS"])] if not df.empty else df
+    total = len(settled)
+    wins = int((settled["status"] == "TRAFIONY").sum()) if total else 0
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Rozliczone horyzonty", total)
+    c2.metric("Trafione", f"{wins}/{total}")
+    c3.metric("Średnia netto", f'{settled["net_pct"].mean():+.4f}%' if total else "—")
+    if not total:
+        st.info("Jeszcze brak rozliczonych testów w tej wersji algorytmu i źródle.")
+    else:
+        st.dataframe(store.stats(symbol, source), use_container_width=True)
+        if total < 100:
+            st.warning("Zbyt mała próba do oceny skuteczności (minimum 100 to dopiero wstęp).")
+    if not df.empty:
+        st.dataframe(df[["created_utc", "side", "horizon", "status", "net_pct"]],
+                     use_container_width=True, hide_index=True)
+    st.download_button("⬇️ Pobierz dziennik CSV (kopia wyników)",
+                       data=df.to_csv(index=False).encode("utf-8-sig"),
+                       file_name="claude_paper_v3.csv", mime="text/csv",
+                       use_container_width=False)
+
+
+journal_panel()
+with st.expander("📰 Wiadomości z rana i południa — kontekst, nie sygnał", expanded=False):
+    st.caption("Wiadomości nie przełączają automatycznie LONG/SHORT. "
+               "Nagłówki nie zastępują zweryfikowanych danych cenowych.")
+    if st.button("Pobierz aktualne nagłówki", key="claude_load_news"):
+        try:
+            titles = get_news(symbol)
+            score, reason = news_score(titles, symbol, use_gpt, model)
+            st.caption(f"Sentyment nagłówków: {score:+.2f} — {reason}. "
+                       "Wartość informacyjna, nie szansa wygranej.")
+            for title in titles[:10]:
+                st.write("• " + title)
+        except Exception:
+            st.info("Nagłówki chwilowo niedostępne.")
+
+if symbol == "CAPITAL_US500":
+    with st.expander("🛠 Diagnostyka Capital.com DEMO (bez sekretów)", expanded=False):
+        st.caption("Odczyt tylko z DEMO. Login i dane API wpisuje się wyłącznie "
+                   "w Settings → Secrets tej aplikacji.")
+        if st.button("Sprawdź logowanie US500", key="claude_diagnostic"):
+            try:
+                d = capital_client().market_details()
+                st.success(f'DEMO OK · {d["epic"]} · stan rynku: {d["market_status"]}')
+            except Exception as exc:
+                st.error(safe_capital_error(exc))
+
+st.warning("PAPER — bez rzeczywistych zleceń. Świece TradingView aktualizują się "
+           "w ramach warunków dostawcy; analiza bota odświeża się przy otwartej stronie. "
+           "Lokalny SQLite w darmowym Streamlit może zniknąć po restarcie. "
+           "Do testów 24/7 potrzebujemy trwałej bazy i procesu w tle.")

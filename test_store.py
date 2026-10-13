@@ -19,11 +19,11 @@ def isolated_db(tmp_path, monkeypatch):
 def test_roundtrip_long_and_cooldown():
     b = bars("2026-10-12 14:00", 120)
     ts = pd.Timestamp("2026-10-12 14:10:10", tz="UTC")
-    assert store.log_signal("SPY", "Yahoo", "LONG", 100.1, ts, cost_pct=0.02) == 4
+    assert store.log_signal("SPY", "Yahoo", "LONG", 100.1, ts, cost_pct=0.005) == 6
     assert store.log_signal("SPY", "Yahoo", "LONG", 100.1, ts + pd.Timedelta(minutes=5)) == 0
     assert store.log_signal("SPY", "Yahoo", "WAIT", 100.1, ts) == 0
-    assert store.settle("SPY", "Yahoo", b, ts + pd.Timedelta(minutes=3)) == 0
-    assert store.settle("SPY", "Yahoo", b, ts + pd.Timedelta(minutes=70)) == 4
+    assert store.settle("SPY", "Yahoo", b, ts + pd.Timedelta(minutes=3)) == 1
+    assert store.settle("SPY", "Yahoo", b, ts + pd.Timedelta(minutes=70)) == 5
     df = store.load("SPY", "Yahoo")
     assert (df["status"] == "TRAFIONY").all()
     assert (df["net_pct"] < df["gross_pct"]).all()
@@ -46,8 +46,8 @@ def test_source_isolation_and_late_gap():
     ts = pd.Timestamp("2026-10-12 14:10:10", tz="UTC")
     store.log_signal("SPY", "Yahoo", "SHORT", 100, ts)
     store.log_signal("SPY", "Alpaca IEX", "SHORT", 100, ts)
-    assert len(store.load("SPY", "Yahoo")) == 4
-    assert len(store.load("SPY", "Alpaca IEX")) == 4
+    assert len(store.load("SPY", "Yahoo")) == 6
+    assert len(store.load("SPY", "Alpaca IEX")) == 6
     store.settle("SPY", "Yahoo", b, ts + pd.Timedelta(minutes=70))
     assert set(store.load("SPY", "Alpaca IEX")["status"]) == {"OCZEKUJE"}
     next_day = pd.Timestamp("2026-10-13 14:10:10", tz="UTC")
@@ -61,7 +61,7 @@ def test_ignores_future_bars_during_settlement():
     ts = pd.Timestamp("2026-10-12 14:10:10", tz="UTC")
     store.log_signal("SPY", "Yahoo", "LONG", 100, ts)
     # b contains candles from the future; these must not be read.
-    assert store.settle("SPY", "Yahoo", b, ts + pd.Timedelta(minutes=4)) == 0
+    assert store.settle("SPY", "Yahoo", b, ts + pd.Timedelta(seconds=30)) == 0
     assert set(store.load("SPY")["status"]) == {"OCZEKUJE"}
 
 

@@ -8,10 +8,10 @@ from contextlib import contextmanager
 import pandas as pd
 
 DB = os.getenv("SIGNAL_DB", "signals_test.db")
-HORIZONS = (5, 15, 30, 60)
+HORIZONS = (1, 3, 5, 15, 30, 60)
 MAX_GAP = pd.Timedelta(minutes=3)
 MISSING_AFTER = pd.Timedelta(hours=6)
-MODEL = "ema9-21-news-v2"
+MODEL = "ema-rsi-click-v3"
 
 
 @contextmanager
