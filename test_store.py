@@ -93,3 +93,19 @@ def test_closed_candles_filter_and_capital_parser():
     df = capital_to_bars(payload, now=pd.Timestamp("2026-10-12 14:03", tz="UTC"))
     assert df["Open"].iloc[0] == pytest.approx(100)
     assert df["CloseBid"].iloc[0] == pytest.approx(99.5)
+
+
+def test_newest_horizon_coverage_reports_missing_not_fake_results():
+    ts = pd.Timestamp("2026-10-13T16:46:17Z")
+    assert store.log_signal("CAPITAL_US500", "Capital.com DEMO",
+                            "LONG", 7800, ts) == 6
+    existing = store.load("CAPITAL_US500", "Capital.com DEMO")
+    full = store.newest_horizon_coverage(existing)
+    assert full["observed"] == (1, 3, 5, 15, 30, 60)
+    assert full["missing"] == ()
+    # Simulate old browser session having recorded only four horizons.
+    truncated = existing[existing["horizon"].isin([5, 15, 30, 60])]
+    missing = store.newest_horizon_coverage(truncated)
+    assert missing["observed"] == (5, 15, 30, 60)
+    assert missing["missing"] == (1, 3)
+    assert len(store.load("CAPITAL_US500", "Capital.com DEMO")) == 6
