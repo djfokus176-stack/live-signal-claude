@@ -392,6 +392,29 @@ def journal_panel():
                        data=all_history.to_csv(index=False).encode("utf-8-sig"),
                        file_name="claude_paper_all_versions.csv",
                        mime="text/csv", use_container_width=False)
+    with st.expander("💾 Przywróć dziennik z pobranego CSV — bez nowego konta"):
+        st.caption("Opcjonalna kopia ratunkowa po restarcie Streamlit. "
+                   "Wybierz tylko plik CSV pobrany wcześniej z tego programu. "
+                   "Powtarzany import nie dubluje testów. To nie jest "
+                   "automatyczna, trwała baza.")
+        restored = st.file_uploader("Wybierz wcześniej pobrany plik CSV",
+                                    type=["csv"], key="restore_claude_csv")
+        if restored is not None and st.button("Sprawdź i przywróć dane z CSV",
+                                             key="restore_claude_confirm"):
+            try:
+                restored_count = store.restore_csv_backup(restored.getvalue())
+                st.session_state["claude_restore_notice"] = (
+                    f"Przywrócono {restored_count} brakujących wierszy "
+                    "(istniejące wpisy bez zmian).")
+                st.rerun(scope="fragment")
+            except (ValueError, TypeError, OverflowError) as exc:
+                st.error(f"Nieprawidłowy plik kopii: {exc}")
+            except Exception:
+                st.error("Nie udało się przywrócić bazy; nie dopisujemy "
+                         "niezweryfikowanych wpisów.")
+        if st.session_state.get("claude_restore_notice"):
+            st.success(st.session_state["claude_restore_notice"])
+
 
 
 journal_panel()
