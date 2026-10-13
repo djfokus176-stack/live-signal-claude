@@ -22,13 +22,19 @@ def evaluate(bars: pd.DataFrame, now: pd.Timestamp) -> dict:
     if bars is None or len(bars) < 60 or "Close" not in bars:
         result["reason"] = "Potrzebujemy co najmniej 60 zamkniętych świec M1."
         return result
-    close = pd.to_numeric(bars["Close"], errors="coerce").dropna()
+    close = pd.to_numeric(bars["Close"], errors="coerce")
     close = close.loc[~close.index.duplicated(keep="last")].sort_index()
     close.index = pd.to_datetime(close.index, utc=True)
     close = close.loc[close.index + pd.Timedelta(minutes=1) <= now]
-    # A closed-minute close must be a valid executable price, not NaN/inf/zero.
-    close = close.loc[close.gt(0) & close.lt(float("inf"))]
     result["bars"] = len(close)
+    # Do not silently drop a corrupted most-recent candle and evaluate a
+    # different past moment while telling the user the data are live.
+    if len(close) >= 60:
+        window_prices = close.tail(60)
+        if not ((window_prices.gt(0) & window_prices.lt(float("inf"))).all()):
+            result["reason"] = "Niepoprawna cena w ostatnich 60 świecach. Bez testu."
+            return result
+    close = close.loc[close.gt(0) & close.lt(float("inf"))].tail(120)
     if len(close) < 60:
         result["reason"] = "Brak 60 poprawnych, zakończonych świec."
         return result
