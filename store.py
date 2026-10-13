@@ -200,3 +200,115 @@ def newest_horizon_coverage(frame, expected=HORIZONS):
     missing = tuple(h for h in ordered if h not in observed)
     return {"created_utc": created, "expected": ordered,
             "observed": observed, "missing": missing}
+
+
+# Restore only files exported by this app. This provides a manual fallback
+# when ephemeral Streamlit Community Cloud SQLite is reset. No new API account.
+BACKUP_COLUMNS = (
+    "symbol", "source", "model", "side", "horizon", "created_utc",
+    "reference_price", "target_utc", "cost_pct", "status",
+    "entry_utc", "exit_utc", "entry_price", "exit_price",
+    "gross_pct", "net_pct",
+)
+
+
+def restore_csv_backup(content):
+    """Merge a previously exported, schema-validated CSV (no double counting).
+
+    It is an optional manual recovery, NOT continuous cloud persistence.
+    All entries are validated before the atomic SQLite transaction.
+    """
+    import io
+    import math
+    if not isinstance(content, bytes) or len(content) > 5_000_000 or not content:
+        raise ValueError("Plik CSV musi mieć od 1 B do 5 MB")
+    try:
+        frame = pd.read_csv(io.BytesIO(content), dtype={"created_utc": "string",
+                                                        "target_utc": "string"})
+    except (ValueError, UnicodeDecodeError, pd.errors.ParserError) as exc:
+        raise ValueError("Nie można odczytać kopii CSV dziennika") from exc
+    if frame.empty:
+        return 0
+    if not set(BACKUP_COLUMNS).issubset(frame.columns) or len(frame) > 10000:
+        raise ValueError("To nie jest eksport dziennika Claude lub plik jest za duży")
+    accepted_status = {"OCZEKUJE", "TRAFIONY", "BLEDNY", "REMIS", "BRAK_DANYCH"}
+    accepted_sources = {
+        "SPY": {"Yahoo", "Alpaca IEX"},
+        "QQQ": {"Yahoo", "Alpaca IEX"},
+        "ES=F": {"Yahoo"},
+        "CAPITAL_US500": {"Capital.com DEMO"},
+    }
+    def number(value, nullable=False):
+        if pd.isna(value) or str(value).strip() == "":
+            if nullable:
+                return None
+            raise ValueError("Brak wymaganej liczby w CSV")
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("Niepoprawna liczba w CSV")
+        return value
+
+    prepared = []
+    for _, row in frame.iterrows():
+        vals = {col: row[col] for col in BACKUP_COLUMNS}
+        sym = str(vals["symbol"])
+        src = str(vals["source"])
+        if src not in accepted_sources.get(sym, set()):
+            raise ValueError("Nieznany instrument albo źródło w kopii")
+        model = str(vals["model"])
+        if not model.startswith(("ema-rsi-click-", "ema9-21-news-")):
+            raise ValueError("Niezgodna wersja modelu w kopii")
+        side = str(vals["side"])
+        status = str(vals["status"])
+        hz = int(number(vals["horizon"]))
+        if side not in ("LONG", "SHORT") or hz not in HORIZONS or status not in accepted_status:
+            raise ValueError("Nieprawidłowy kierunek, horyzont lub status w kopii")
+        created = pd.Timestamp(vals["created_utc"])
+        target = pd.Timestamp(vals["target_utc"])
+        if created.tzinfo is None or target.tzinfo is None:
+            raise ValueError("Kopie muszą zawierać godziny UTC ze strefą")
+        if abs((target-created).total_seconds() - 60*hz) > 1:
+            raise ValueError("Horyzont kopii jest niezgodny z terminem rozliczenia")
+        ref = number(vals["reference_price"])
+        cost = number(vals["cost_pct"])
+        if ref <= 0 or not 0 <= cost <= 2:
+            raise ValueError("Niepoprawna cena lub koszt w kopii")
+        for field in ("entry_utc", "exit_utc"):
+            if not pd.isna(vals[field]) and str(vals[field]).strip():
+                t = pd.Timestamp(vals[field])
+                if t.tzinfo is None:
+                    raise ValueError("Czas wykonania w kopii musi być UTC")
+            else:
+                vals[field] = None
+        for field in ("entry_price", "exit_price", "gross_pct", "net_pct"):
+            vals[field] = number(vals[field], nullable=True)
+        if status in {"TRAFIONY", "BLEDNY", "REMIS"}:
+            net = vals["net_pct"]
+            if net is None or (
+                (status == "TRAFIONY" and net <= 0) or
+                (status == "BLEDNY" and net >= 0) or
+                (status == "REMIS" and abs(net) > 1e-8)
+            ):
+                raise ValueError("Status w kopii jest niezgodny z wynikiem netto")
+        vals["horizon"] = hz
+        vals["reference_price"] = ref
+        vals["cost_pct"] = cost
+        prepared.append(tuple(vals[col] for col in BACKUP_COLUMNS))
+
+    inserted = 0
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        for values in prepared:
+            symbol, source, model, side, hz, created = values[:6]
+            already = c.execute(
+                """SELECT 1 FROM signals
+                   WHERE symbol=? AND source=? AND model=? AND side=?
+                     AND horizon=? AND created_utc=? LIMIT 1""",
+                (symbol, source, model, side, hz, created)).fetchone()
+            if already:
+                continue
+            cols = ", ".join(BACKUP_COLUMNS)
+            params = ", ".join("?" for _ in BACKUP_COLUMNS)
+            c.execute(f"INSERT INTO signals ({cols}) VALUES ({params})", values)
+            inserted += 1
+    return inserted
