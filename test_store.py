@@ -109,3 +109,54 @@ def test_newest_horizon_coverage_reports_missing_not_fake_results():
     assert missing["observed"] == (5, 15, 30, 60)
     assert missing["missing"] == (1, 3)
     assert len(store.load("CAPITAL_US500", "Capital.com DEMO")) == 6
+
+
+def test_entry_after_target_cannot_be_called_profitable_trade():
+    import numpy as np
+    ts = pd.Timestamp("2026-10-13 14:10:10", tz="UTC")
+    store.log_signal("CAPITAL_US500", "Capital.com DEMO", "LONG", 100,
+                     ts, cost_pct=0)
+    prices = bars("2026-10-13 14:00", 120, step=0.1)
+    # Remove the only possible 1m entry. The next available candle opens
+    # AFTER the intended 1m exit time.
+    prices = prices.drop(pd.Timestamp("2026-10-13 14:11", tz="UTC"))
+    store.settle("CAPITAL_US500", "Capital.com DEMO",
+                 prices, ts + pd.Timedelta(minutes=70))
+    df = store.load("CAPITAL_US500")
+    one = df[df["horizon"] == 1].iloc[0]
+    assert one["status"] == "BRAK_DANYCH"
+    assert pd.isna(one["net_pct"])
+
+
+def test_model_upgrade_does_not_recalculate_old_result():
+    ts = pd.Timestamp("2026-10-13 14:10:10", tz="UTC")
+    assert store.log_signal("SPY", "Yahoo", "SHORT", 100, ts,
+                            model="ema-rsi-click-v3") == 6
+    assert store.load("SPY", "Yahoo").empty
+    assert len(store.load("SPY", "Yahoo", model=None)) == 6
+    current = ts + pd.Timedelta(hours=1)
+    assert store.log_signal("SPY", "Yahoo", "LONG", 100, current) == 6
+    assert len(store.load("SPY", "Yahoo")) == 6
+    assert len(store.load("SPY", "Yahoo", model=None)) == 12
+
+
+def test_bad_reference_or_cost_rejected():
+    ts = pd.Timestamp("2026-10-13 14:10:10", tz="UTC")
+    for price in (0, -1, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            store.log_signal("SPY", "Yahoo", "LONG", price, ts)
+    for bad_cost in (-0.01, float("nan"), float("inf"), 3):
+        with pytest.raises(ValueError):
+            store.log_signal("SPY", "Yahoo", "SHORT", 100, ts, cost_pct=bad_cost)
+    assert store.load(model=None).empty
+
+
+def test_two_simultaneous_clicks_create_only_one_6_horizon_test():
+    from concurrent.futures import ThreadPoolExecutor
+    ts = pd.Timestamp("2026-10-13 14:10:10", tz="UTC")
+    def click(_):
+        return store.log_signal("SPY", "Yahoo", "LONG", 100, ts)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(click, range(2)))
+    assert sorted(outcomes) == [0, 6]
+    assert len(store.load("SPY", "Yahoo")) == 6
