@@ -312,8 +312,13 @@ def bot_and_log():
             store.log_scan(symbol, actual_source, now, origin, result,
                            audit_result, news_score=headline_score,
                            news_titles=titles)
-        except Exception:
-            st.warning("Nie udało się zapisać historii skanów.")
+        except Exception as exc:
+            # Sanitized diagnostic: only Python exception class, never DB
+            # content, connection parameters or brokerage credentials.
+            st.warning("Historia skanów: zapis niedostępny "
+                       f"({type(exc).__name__}). Test PAPER, jeżeli został "
+                       "zapisany wcześniej, pozostaje w dzienniku pozycji. "
+                       "Bot ponowi kontrolę przy kolejnym skanie.")
         st.session_state["claude_news_context"] = {
             "key": current_key, "count": len(titles),
             "score": headline_score, "titles": titles[:3],

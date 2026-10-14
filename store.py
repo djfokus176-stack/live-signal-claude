@@ -16,7 +16,15 @@ MODEL = "ema-rsi-v5-auto-paper"
 
 @contextmanager
 def db():
-    conn = sqlite3.connect(DB, timeout=15)
+    # Four Streamlit fragments may read/write at once. Give writes time to
+    # acquire the lock, and use WAL where supported by the filesystem.
+    conn = sqlite3.connect(DB, timeout=30)
+    conn.execute("PRAGMA busy_timeout=30000")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        # Some hosted filesystems don't support WAL; normal SQLite still works.
+        pass
     conn.execute("""CREATE TABLE IF NOT EXISTS signals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         symbol TEXT NOT NULL,
@@ -58,11 +66,37 @@ def db():
         news_count INTEGER NOT NULL DEFAULT 0,
         news_sample TEXT NOT NULL DEFAULT ''
     )""")
+    # A Streamlit hot update may retain an older SQLite schema. Reconcile
+    # additive columns before indexing/inserting instead of failing forever.
+    scan_columns = {item[1] for item in conn.execute("PRAGMA table_info(paper_scans)")}
+    scan_defaults = {
+        "created_utc": "TEXT NOT NULL DEFAULT ''",
+        "symbol": "TEXT NOT NULL DEFAULT ''",
+        "source": "TEXT NOT NULL DEFAULT ''",
+        "model": "TEXT NOT NULL DEFAULT ''",
+        "origin": "TEXT NOT NULL DEFAULT 'MANUAL'",
+        "direction": "TEXT NOT NULL DEFAULT 'WAIT'",
+        "result": "TEXT NOT NULL DEFAULT 'WAIT'",
+        "note": "TEXT NOT NULL DEFAULT ''",
+        "score_long": "INTEGER",
+        "reference_price": "REAL",
+        "closed_bars": "INTEGER",
+        "age_minutes": "REAL",
+        "news_score": "REAL",
+        "news_count": "INTEGER NOT NULL DEFAULT 0",
+        "news_sample": "TEXT NOT NULL DEFAULT ''",
+    }
+    for column, declaration in scan_defaults.items():
+        if column not in scan_columns:
+            conn.execute(f"ALTER TABLE paper_scans ADD COLUMN {column} {declaration}")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_scans_today
                     ON paper_scans(created_utc, symbol, model)""")
     try:
         yield conn
         conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -228,17 +262,34 @@ def log_scan(symbol, source, now, origin, opinion, result, news_score=None,
     titles = [str(x).replace("\n", " ").strip()[:180]
               for x in tuple(news_titles)[:3]]
     note = str(opinion.get("reason", ""))[:600]
-    with db() as c:
-        c.execute("""INSERT INTO paper_scans
-            (created_utc, symbol, source, model, origin, direction, result,
-             note, score_long, reference_price, closed_bars, age_minutes,
-             news_score, news_count, news_sample)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (now.tz_convert("UTC").isoformat(), symbol, source, model, origin,
-             direction, result, note, finite_or_none(score),
-             finite_or_none(ref), int(opinion.get("bars") or 0),
-             finite_or_none(age), finite_or_none(news_score),
-             len(tuple(news_titles)), " | ".join(titles)))
+    import time
+    values = (now.tz_convert("UTC").isoformat(), symbol, source, model, origin,
+              direction, result, note, finite_or_none(score),
+              finite_or_none(ref), int(opinion.get("bars") or 0),
+              finite_or_none(age), finite_or_none(news_score),
+              len(tuple(news_titles)), " | ".join(titles))
+    # Three retries protect the scan log from brief concurrent Streamlit
+    # fragment writes. An explicit transaction prevents partial inserts.
+    for attempt in range(3):
+        try:
+            with db() as c:
+                c.execute("BEGIN IMMEDIATE")
+                prior = c.execute("""SELECT 1 FROM paper_scans
+                    WHERE created_utc=? AND symbol=? AND source=? AND model=?
+                      AND origin=? LIMIT 1""",
+                    (values[0], values[1], values[2], values[3], values[4])).fetchone()
+                if not prior:
+                    c.execute("""INSERT INTO paper_scans
+                        (created_utc, symbol, source, model, origin, direction,
+                         result, note, score_long, reference_price, closed_bars,
+                         age_minutes, news_score, news_count, news_sample)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", values)
+            return True
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == 2:
+                raise
+            time.sleep(0.15 * (attempt + 1))
+    return False
 
 
 def load_scans(symbol=None, model=None):
