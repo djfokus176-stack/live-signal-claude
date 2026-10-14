@@ -9,6 +9,7 @@ import streamlit as st
 
 import data_sources as ds
 import store
+import paper_dashboard
 from signal_logic import evaluate
 from daily_report import today_activity
 from paper_scheduler import auto_scan_due
@@ -368,7 +369,7 @@ def bot_and_log():
 
 
 st.title("CLAUDE LIVE SIGNAL — PROGRAM 2")
-st.caption("V5 AUTO PAPER · kontrola cen · osobne wyniki dla kolejnych wersji modelu")
+st.caption("V5 AUTO PAPER · wirtualne wejścia 15m i automatyczne wiadomości RSS")
 st.caption("Duże świece + przycisk analizy + niezależne wyniki PAPER. "
            "Nie zmienia PROGRAMU 1: SP500 AI PRO.")
 
@@ -428,6 +429,15 @@ def today_panel():
                    "bazy. Nie przedstawiamy niepotwierdzonych typów.")
 
 today_panel()
+
+@st.fragment(run_every=refresh)
+def paper_position_audit():
+    current_source = st.session_state.get(
+        "claude_last_source_" + symbol,
+        "Capital.com DEMO" if symbol == "CAPITAL_US500" else "Yahoo")
+    paper_dashboard.render(symbol, current_source)
+
+paper_position_audit()
 
 st.divider()
 st.subheader("📒 Dziennik i rozliczenia — tylko PROGRAM 2")
