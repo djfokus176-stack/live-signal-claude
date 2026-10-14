@@ -169,3 +169,18 @@ python -m pytest -q
 
 Seria publicznego ES=F zawsze pozostaje **oddzielna** od
 ręcznych/aktywnych testów CFD i od wyników PROGRAMU 1.
+
+## 14.10.2026 — widok „Typy z dzisiaj”
+
+Dodano sekcję **Typy z dzisiaj — PROGRAM 2** nad pełnym dziennikiem.
+Pokazuje po polsku (strefa `Europe/Warsaw`) każdą **faktycznie
+zapisaną** prognozę LONG/SHORT, niezależnie od wersji V3/V4/V5,
+osobno z instrumentem, źródłem, wersją modelu, sposobem AUTO/RĘCZNY
+oraz wynikami na 1/3/5/15/30/60 min. Jedno wejście ma maksymalnie
+sześć powiązanych horyzontów, a nie sześć niezależnych zakładów.
+Opcja CSV umożliwia zapis dzisiejszego zestawienia.
+
+**Ważne:** nie są zapisywane same skany WAIT. Jeżeli nie ma dzisiejszych
+wyników w lokalnym SQLite, nie dowodzi to, że bot nie analizował rynku:
+mógł trzymać WAIT lub baza mogła zniknąć po restarcie Streamlit.
+To nie jest historia z GitHub 24/7; tamten skaner pozostaje nieaktywny.
