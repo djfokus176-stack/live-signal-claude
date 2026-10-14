@@ -1,5 +1,8 @@
 name: CLAUDE PROGRAM 2 - Auto PAPER Futures (public)
 "on":
+  push:
+    branches:
+      - feature-github-24h-public-futures-paper-20261014
   schedule:
     # UTC. Offset from the top of the hour reduces queue delays.
     # Every 15 min during weekdays, irrespective of Streamlit uptime.
@@ -15,6 +18,7 @@ concurrency:
 
 jobs:
   paper:
+    if: github.ref == 'refs/heads/main'
     name: ES futures - Yahoo PAPER only
     runs-on: ubuntu-latest
     timeout-minutes: 8
