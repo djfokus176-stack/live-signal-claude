@@ -11,7 +11,7 @@ DB = os.getenv("SIGNAL_DB", "signals_test.db")
 HORIZONS = (1, 3, 5, 15, 30, 60)
 MAX_GAP = pd.Timedelta(minutes=3)
 MISSING_AFTER = pd.Timedelta(hours=6)
-MODEL = "ema-rsi-click-v4-audit"
+MODEL = "ema-rsi-v5-auto-paper"
 
 
 @contextmanager
@@ -31,8 +31,13 @@ def db():
         status TEXT NOT NULL DEFAULT 'OCZEKUJE',
         entry_utc TEXT, exit_utc TEXT,
         entry_price REAL, exit_price REAL,
-        gross_pct REAL, net_pct REAL
+        gross_pct REAL, net_pct REAL,
+        origin TEXT NOT NULL DEFAULT 'MANUAL'
     )""")
+    # Old SQLite files were created before the origin provenance column.
+    existing_cols = {item[1] for item in conn.execute("PRAGMA table_info(signals)")}
+    if "origin" not in existing_cols:
+        conn.execute("ALTER TABLE signals ADD COLUMN origin TEXT NOT NULL DEFAULT 'MANUAL'")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_journal_lookup
                     ON signals(symbol, source, model, status)""")
     try:
@@ -43,9 +48,11 @@ def db():
 
 
 def log_signal(symbol, source, side, price, now, cost_pct=0.08,
-               model=MODEL, cooldown_min=15):
+               model=MODEL, cooldown_min=15, origin="MANUAL"):
     if side not in ("LONG", "SHORT"):
         return 0
+    if origin not in ("AUTO", "MANUAL"):
+        raise ValueError("Nieznane pochodzenie testu PAPER")
     now = pd.Timestamp(now).tz_convert("UTC")
     import math
     if not math.isfinite(float(price)) or float(price) <= 0:
@@ -57,17 +64,17 @@ def log_signal(symbol, source, side, price, now, cost_pct=0.08,
         # also when two browser sessions click at nearly the same time.
         c.execute("BEGIN IMMEDIATE")
         last = c.execute("""SELECT MAX(created_utc) FROM signals
-            WHERE symbol=? AND source=? AND model=? AND side=?""",
-            (symbol, source, model, side)).fetchone()[0]
+            WHERE symbol=? AND source=? AND model=?""",
+            (symbol, source, model)).fetchone()[0]
         if last and now - pd.Timestamp(last) < pd.Timedelta(minutes=cooldown_min):
             return 0
         for hz in HORIZONS:
             c.execute("""INSERT INTO signals
                 (symbol, source, model, side, horizon, created_utc,
-                 reference_price, target_utc, cost_pct)
-                VALUES (?,?,?,?,?,?,?,?,?)""",
+                 reference_price, target_utc, cost_pct, origin)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
                 (symbol, source, model, side, hz, now.isoformat(), float(price),
-                 (now + pd.Timedelta(minutes=hz)).isoformat(), float(cost_pct)))
+                 (now + pd.Timedelta(minutes=hz)).isoformat(), float(cost_pct), origin))
     return len(HORIZONS)
 
 
@@ -87,9 +94,15 @@ def settle(symbol, source, bars, now, model=MODEL):
         return 0
     done = 0
     with db() as c:
-        rows = c.execute("""SELECT id, created_utc, horizon, side, cost_pct
-            FROM signals WHERE symbol=? AND source=? AND model=? AND status='OCZEKUJE'""",
-            (symbol, source, model)).fetchall()
+        if model is None:
+            # Settle historical pending signals too, after V3/V4 -> V5 upgrade.
+            rows = c.execute("""SELECT id, created_utc, horizon, side, cost_pct
+                FROM signals WHERE symbol=? AND source=? AND status='OCZEKUJE'""",
+                (symbol, source)).fetchall()
+        else:
+            rows = c.execute("""SELECT id, created_utc, horizon, side, cost_pct
+                FROM signals WHERE symbol=? AND source=? AND model=? AND status='OCZEKUJE'""",
+                (symbol, source, model)).fetchall()
         for signal_id, created_str, hz, side, cost_pct in rows:
             created = pd.Timestamp(created_str)
             target = created + pd.Timedelta(minutes=hz)
@@ -208,7 +221,7 @@ BACKUP_COLUMNS = (
     "symbol", "source", "model", "side", "horizon", "created_utc",
     "reference_price", "target_utc", "cost_pct", "status",
     "entry_utc", "exit_utc", "entry_price", "exit_price",
-    "gross_pct", "net_pct",
+    "gross_pct", "net_pct", "origin",
 )
 
 
@@ -229,8 +242,11 @@ def restore_csv_backup(content):
         raise ValueError("Nie można odczytać kopii CSV dziennika") from exc
     if frame.empty:
         return 0
-    if not set(BACKUP_COLUMNS).issubset(frame.columns) or len(frame) > 10000:
+    # Older V2-V4 exports have no origin column; those were manual tests.
+    if not set(BACKUP_COLUMNS[:-1]).issubset(frame.columns) or len(frame) > 10000:
         raise ValueError("To nie jest eksport dziennika Claude lub plik jest za duży")
+    if "origin" not in frame.columns:
+        frame["origin"] = "MANUAL"
     accepted_status = {"OCZEKUJE", "TRAFIONY", "BLEDNY", "REMIS", "BRAK_DANYCH"}
     accepted_sources = {
         "SPY": {"Yahoo", "Alpaca IEX"},
@@ -256,13 +272,15 @@ def restore_csv_backup(content):
         if src not in accepted_sources.get(sym, set()):
             raise ValueError("Nieznany instrument albo źródło w kopii")
         model = str(vals["model"])
-        if not model.startswith(("ema-rsi-click-", "ema9-21-news-")):
+        if not model.startswith(("ema-rsi-click-", "ema9-21-news-", "ema-rsi-v5-")):
             raise ValueError("Niezgodna wersja modelu w kopii")
         side = str(vals["side"])
         status = str(vals["status"])
         hz = int(number(vals["horizon"]))
         if side not in ("LONG", "SHORT") or hz not in HORIZONS or status not in accepted_status:
             raise ValueError("Nieprawidłowy kierunek, horyzont lub status w kopii")
+        if str(vals["origin"]) not in ("AUTO", "MANUAL"):
+            raise ValueError("Nieznane pochodzenie sygnału PAPER w kopii")
         created = pd.Timestamp(vals["created_utc"])
         target = pd.Timestamp(vals["target_utc"])
         if created.tzinfo is None or target.tzinfo is None:

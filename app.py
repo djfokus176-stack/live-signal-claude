@@ -10,6 +10,7 @@ import streamlit as st
 import data_sources as ds
 import store
 from signal_logic import evaluate
+from paper_scheduler import auto_scan_due
 
 st.set_page_config(page_title="CLAUDE LIVE SIGNAL • PAPER", page_icon="📈", layout="wide")
 
@@ -56,7 +57,7 @@ TV_SYMBOLS = {
 
 with st.sidebar:
     st.markdown("### 🤖 CLAUDE LIVE SIGNAL")
-    st.caption("PROGRAM 2 · niezależny eksperyment · wersja V4 AUDYT")
+    st.caption("PROGRAM 2 · PAPER · wersja V5 AUTO")
     st.divider()
     # CFD first: US500 is traded during many morning hours as well as US session.
     names = ["S&P 500 CFD (Capital.com DEMO)", "S&P 500 ETF (SPY)",
@@ -68,6 +69,12 @@ with st.sidebar:
         "Yahoo" if symbol == "ES=F" else st.selectbox("Dane do analizy bota",
             ["Auto (Alpaca → Yahoo)", "Alpaca IEX", "Yahoo"]))
     refresh = st.slider("Odświeżanie analizy (sek.)", 20, 120, 30, step=10)
+    auto_paper = st.toggle("Automatyczne testy PAPER co 15 min", value=True,
+                           help="Skanuje i zapisuje tylko gdy karta Streamlit "
+                                "pozostaje aktywna. Nie wysyła zleceń.")
+    st.caption("AUTO: bez kosztów OpenAI, wyłącznie świeże zamknięte świece. "
+               "Po zamknięciu karty testy nie zbierają się dalej. "
+               "Wyłącz przełącznikiem, aby korzystać tylko ręcznie.")
     cost = st.number_input("Koszt dodatkowy ROUND TRIP (%)", min_value=0.0,
                            max_value=2.0, value=0.08, step=0.01)
     st.caption("Dla CFD spread bid/ask jest już uwzględniany w teście. "
@@ -247,7 +254,7 @@ def bot_and_log():
     if not candles.empty:
         # Passive settlement is safe; no forecast is silently logged.
         try:
-            store.settle(symbol, actual_source, candles, now)
+            store.settle(symbol, actual_source, candles, now, model=None)
         except Exception:
             st.warning("Rozliczanie chwilowo niedostępne (baza).")
     if symbol == "CAPITAL_US500" and candles.empty:
@@ -257,38 +264,62 @@ def bot_and_log():
     clicked = st.button("🤖 ANALIZUJ TERAZ — LONG czy SHORT?",
                         use_container_width=True, type="primary")
     current_key = f"{symbol}|{actual_source}"
-    if clicked:
+    auto_slot = f"claude_v5_auto_{symbol}_{actual_source}"
+    last_auto_scan = st.session_state.get(auto_slot)
+    auto_due = bool(auto_paper and not clicked and
+                    auto_scan_due(last_auto_scan, now))
+    if clicked or auto_due:
+        if auto_due:
+            # Only mark the scan as due once for this user session.
+            # Never claim 24/7 collection or durable market background work.
+            st.session_state[auto_slot] = now.isoformat()
+        origin = "MANUAL" if clicked else "AUTO"
         result = dict(opinion)
         saved = 0
         issue = ""
         if result["side"] in ("LONG", "SHORT") and result["reference"] is not None:
             try:
                 saved = store.log_signal(symbol, actual_source, result["side"],
-                                         result["reference"], now, cost)
+                                         result["reference"], now, cost,
+                                         origin=origin)
                 if saved == 0:
-                    issue = "Podobny sygnał już zapisano w ostatnich 15 minutach."
+                    issue = ("Blokada 15 min od poprzedniego zapisu na "
+                             "tym instrumencie — brak nowego testu.")
             except Exception:
-                issue = "Błąd zapisu; nie zakładamy, że sygnał zapisano."
+                issue = "Błąd zapisu bazy — niczego nie uznajemy za zapisane."
         else:
-            issue = "WAIT — nie zapisujemy hipotetycznego wejścia."
-        st.session_state["last_bot_v3"] = {
+            issue = ("WAIT — bez prognozy LONG/SHORT i bez nowego testu. "
+                     + result["reason"])
+        st.session_state["last_bot_v5"] = {
             "key": current_key, "analysis": result, "time": now.isoformat(),
-            "saved": saved, "message": issue,
+            "saved": saved, "message": issue, "origin": origin,
         }
 
-    previous = st.session_state.get("last_bot_v3")
+    if auto_paper:
+        st.caption("🟢 AUTO PAPER włączony — skan co 15 minut, TYLKO "
+                   "gdy strona pozostaje aktywna.")
+        last_scan = st.session_state.get(auto_slot)
+        if last_scan:
+            last_pl = pd.Timestamp(last_scan).tz_convert(
+                "Europe/Warsaw").strftime("%H:%M:%S")
+            st.caption(f"Ostatni skan AUTO tej sesji: {last_pl} (czas polski)")
+    else:
+        st.caption("AUTO PAPER wyłączony — tylko przycisk ręczny.")
+
+    previous = st.session_state.get("last_bot_v5")
     if previous and previous.get("key") == current_key:
         assessed = previous["analysis"]
         direction = assessed["side"]
+        origin_text = "AUTO" if previous["origin"] == "AUTO" else "RĘCZNY"
         time_pl = pd.Timestamp(previous["time"]).tz_convert("Europe/Warsaw").strftime("%H:%M:%S")
         if previous["saved"] and direction == "LONG":
-            st.success(f"🟢 LONG — NOWY test PAPER zapisany · {time_pl}")
+            st.success(f"🟢 LONG — NOWY test {origin_text} PAPER zapisany · {time_pl}")
         elif previous["saved"] and direction == "SHORT":
-            st.error(f"🔴 SHORT — NOWY test PAPER zapisany · {time_pl}")
+            st.error(f"🔴 SHORT — NOWY test {origin_text} PAPER zapisany · {time_pl}")
         elif direction in ("LONG", "SHORT"):
-            st.info(f"{direction} — analiza {time_pl}; NIE zapisano nowego testu")
+            st.info(f"{direction} — analiza {origin_text} {time_pl}; NIE zapisano nowego testu")
         else:
-            st.warning(f"🟡 WAIT — bez testowego wejścia · {time_pl}")
+            st.warning(f"🟡 WAIT — skan {origin_text}, bez testowego wejścia · {time_pl}")
         st.metric("Indeks kierunku LONG (nie % trafień)",
                   f'{assessed["score_long"]}/100')
         st.write(assessed["reason"])
@@ -303,17 +334,18 @@ def bot_and_log():
                        f'{previous["saved"]} niezależnych transakcji.')
         if previous["message"]:
             st.info(previous["message"])
-        st.caption("Wyświetlana decyzja pochodzi z ostatniego kliknięcia, "
-                   "a nie z każdego automatycznego odświeżenia.")
+        st.caption("Wynik ostatniej analizy (ręcznej lub AUTO), "
+                   "nie każdej aktualizacji wykresu.")
     else:
-        st.info("Wybierz moment, w którym chcesz sprawdzić rynek. "
-                "Bot zapisze test tylko po kliknięciu i tylko dla świeżych danych.")
+        st.info("Bot wykonuje test AUTO co 15 minut przy otwartej stronie; "
+                "możesz także kliknąć przycisk. "
+                "Zapisywane są tylko świeże LONG/SHORT.")
     st.caption("Ocena nie jest prawdopodobieństwem wygranej. "
                "System nie ma jeszcze potwierdzonej przewagi po kosztach.")
 
 
 st.title("CLAUDE LIVE SIGNAL — PROGRAM 2")
-st.caption("V4 AUDYT · źródła cen kontrolowane · rozliczenia PAPER bez przyszłych danych")
+st.caption("V5 AUTO PAPER · kontrola cen · osobne wyniki dla kolejnych wersji modelu")
 st.caption("Duże świece + przycisk analizy + niezależne wyniki PAPER. "
            "Nie zmienia PROGRAMU 1: SP500 AI PRO.")
 
@@ -351,6 +383,10 @@ def journal_panel():
     st.caption(f"Wersja dziennika: {store.MODEL} · źródło: {source} · "
                f'oczekiwane horyzonty jednej analizy: {", ".join(str(h) for h in store.HORIZONS)} min.')
     if not df.empty:
+        origin_counts = df.groupby("origin")["created_utc"].nunique().to_dict()
+        st.caption("Zapisane analizy V5: AUTO "
+                   f'{origin_counts.get("AUTO", 0)} · RĘCZNE '
+                   f'{origin_counts.get("MANUAL", 0)}.')
         latest = store.newest_horizon_coverage(df)
         local_time = pd.Timestamp(latest["created_utc"]).tz_convert(
             "Europe/Warsaw").strftime("%d.%m.%Y %H:%M:%S")
@@ -372,18 +408,18 @@ def journal_panel():
         if total < 100:
             st.warning("Zbyt mała próba do oceny skuteczności (minimum 100 to dopiero wstęp).")
     if not df.empty:
-        st.dataframe(df[["created_utc", "side", "horizon", "status", "net_pct"]],
+        st.dataframe(df[["created_utc", "origin", "side", "horizon", "status", "net_pct"]],
                      use_container_width=True, hide_index=True)
     st.download_button("⬇️ Pobierz aktualny dziennik CSV",
                        data=df.to_csv(index=False).encode("utf-8-sig"),
-                       file_name="claude_paper_v4.csv", mime="text/csv",
+                       file_name="claude_paper_v5.csv", mime="text/csv",
                        use_container_width=False)
     # Never mix V3 and V4 outcomes in the same success percentage.
     all_history = store.load(symbol, source, model=None)
     old = all_history.loc[all_history["model"] != store.MODEL]
     if not old.empty:
         with st.expander("📚 Historia starszych wersji algorytmu (osobno)"):
-            st.caption("Wyników V3 nie łączymy ze skutecznością V4. "
+            st.caption("Nie łączymy skuteczności historycznych wersji z V5. "
                        "Poprzednie sygnały w lokalnej bazie pozostały.")
             st.dataframe(old[["model", "created_utc", "side",
                               "horizon", "status", "net_pct"]],

@@ -1,14 +1,14 @@
-# CLAUDE LIVE SIGNAL — PROGRAM 2 (V4 AUDYT, PAPER)
+# CLAUDE LIVE SIGNAL — PROGRAM 2 (V5 AUTO PAPER)
 
 **To osobny program z repozytorium `live-signal-claude`. Nie edytuje
 `SP500-SIGNAL-AI-PRO` (PROGRAM 1).**
 
-## Co działa w V4 (po audycie)
+## Co działa w V5
 
 - TradingView: duże świece **US500 CFD** (domyślnie), **SPY**, **QQQ** albo **ES futures**,
   interwały 1/3/5/15/30/60 min. Wykres z TradingView może mieć opóźnienie
   i **nie** jest źródłem danych wejściowych modelu.
-- Osobny panel: **ANALIZUJ TERAZ — LONG czy SHORT?** Czyta wyłącznie zamknięte
+- **AUTO PAPER co 15 minut jest domyślnie włączony**, ale działa **wyłącznie\n  przy otwartej/aktywnej stronie Streamlit**. Można go wyłączyć w lewym panelu.\n  Rozliczenia PAPER nie oznaczają rzeczywistego handlu.\n- Osobny panel: **ANALIZUJ TERAZ — LONG czy SHORT?** Czyta wyłącznie zamknięte
   minutowe świece z Capital.com DEMO (US500) lub Alpaca IEX / Yahoo (SPY/QQQ).
 - Tylko jeśli świeże co najmniej 60 świec M1 są dostępne, pokazuje
   hipotezę LONG/SHORT/WAIT, EMA9/EMA21, RSI14 i momentum 5 min.
@@ -16,7 +16,7 @@
   Nie używaj do prawdziwych transakcji przed wiarygodnym testem.
 - Kliknięcie przy świeżym LONG lub SHORT tworzy jeden testowy moment i zapisy
   na 1/3/5/15/30/60 min. Kliknięcie WAIT niczego nie obstawia.\n  Ponowne kliknięcie w czasie blokady pokazuje kierunek, ale NIE ogłasza\n  nieistniejącego nowego zapisu.
-  Powtórzony kierunek w tej samej kombinacji symbol/źródło/model ma 15-minutową blokadę.
+  **Każdy kolejny LONG lub SHORT** w tej samej kombinacji instrument/źródło/model\n  ma 15-minutową blokadę, nawet gdy kierunek się odwróci. To ogranicza\n  dublowanie tej samej obserwacji w testach.
 - Przed prognozą sprawdzamy 60 kolejnych zamkniętych świec M1 oraz poprawność\n  cen, a brak ciągłości lub nieświeże dane oznaczają WAIT.\n- Po odświeżeniu zamknięte świece służą do rozliczenia: TRAFIONY/BLEDNY,
   BRAK_DANYCH, wynik netto po spreadzie CFD i dodatkowych kosztach.
 - Dziennik CSV na żądanie i **opcjonalne przywracanie eksportu CSV** po\n  restarcie bez duplikowania zapisów. Wiadomości RSS (opcjonalnie płatna analiza
@@ -28,7 +28,7 @@
 
 Otwórz istniejącą aplikację `live-signal-claude` w Streamlit.
 Nie twórz nowego repo ani nie zmieniaj `sp500-signal-ai-pro`.
-Naciśnij Ctrl+F5 po wdrożeniu V4.\nNie zmieniaj kluczy Capital.com — jeśli wcześniej wyświetlało świeże dane,\npozostaw te same Secrets.
+Naciśnij Ctrl+F5 po wdrożeniu V5.\nNie zmieniaj kluczy Capital.com — jeśli wcześniej wyświetlało świeże dane,\npozostaw te same Secrets.
 
 ### Capital.com DEMO — tylko dla US500
 
@@ -80,7 +80,7 @@ streamlit run app.py
 
 Testy lokalne i CI korzystają z udawanych cen, bez autoryzacji do prawdziwego API.
 
-## Wynik audytu (13.10.2026)
+## Audyt pierwotny (13.10.2026)
 
 - Cały istniejący projekt został sprawdzony pod kątem spójności danych
   i wyników PAPER. Model V4 nie używa niedokończonych świec, nie łączy
@@ -100,3 +100,7 @@ Testy lokalne i CI korzystają z udawanych cen, bez autoryzacji do prawdziwego A
   nigdy nie pokazuje ich w aplikacji.
 - Dziennik SQLite w Streamlit pozostaje nietrwały; bieżące dane pobieraj
   przez przycisk eksportu. Nie określamy tego jako trwałego archiwum.
+
+## Co zostało poprawione 14.10.2026 — V5 AUTO PAPER
+
+- Uruchomiono **opcjonalną automatyzację PAPER co 15 minut w czasie aktywnej\n  sesji przeglądarki** (bez płatnego OpenAI API). Domyślnie włączona,\n  wyłączana przełącznikiem. Start skanowania w chwili otwarcia strony,\n  dalej maksymalnie raz na 15 minut. To nie jest osobny proces 24/7.\n- Bot zapisuje tylko kierunki LONG/SHORT przy poprawnych, świeżych świecach.\n  WAIT jest komunikatem bez nowej transakcji PAPER.\n- W dzienniku pojawiło się **AUTO** / **MANUAL**. Starsze wersje\n  bazy/plików CSV otrzymują oznaczenie MANUAL bez zmiany starych wyników.\n- Limit jednego testowego wejścia na 15 minut w obrębie instrumentu, źródła\n  i wersji modelu działa także przy natychmiastowym zwrocie LONG→SHORT.\n- Oczekujące testy V3/V4 są ponownie sprawdzane, jeśli dostępne są historyczne\n  świece do ich uczciwego rozliczenia. Nie rekonstruujemy cen, których\n  źródło nie udostępnia. Starsze wyniki wciąż pozostają w osobnych tabelach.\n- CI bada także automat 15-minutowy, blokady, przywracanie starszych CSV\n  i rozliczanie oczekujących testów ze wcześniejszych modeli.\n\n**Ograniczenie:** ta zmiana nie pozwala na zbieranie danych przy zamkniętej\nprzeglądarce i nie rozwiązuje utraty SQLite po restarcie Streamlit.\nNie przenosimy sekretów Capital.com do GitHub Actions. Do prawdziwego 24/7\nkonieczny byłby osobny bezpieczny harmonogram i trwały magazyn; nie są\njeszcze uruchomione i nie należy twierdzić inaczej.\n
