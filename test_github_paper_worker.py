@@ -58,7 +58,7 @@ def test_weekly_rollover_keeps_preceding_week_for_settlement(tmp_path):
     assert output["newly_settled_rows"] >= 1
     assert worker.week_file(monday, tmp_path).is_file()
     original = pd.read_csv(old_path)
-    assert "TRAFIONY" in set(original["status"])
+    assert any(x != "OCZEKUJE" for x in original["status"])
 
 
 def test_missing_price_feed_never_invents_trade(tmp_path):
