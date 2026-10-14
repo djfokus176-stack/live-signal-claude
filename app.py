@@ -456,12 +456,13 @@ def journal_panel():
 journal_panel()
 
 st.divider()
-st.subheader("🗃️ GitHub AUTO PAPER — historia bez otwartej strony")
-st.caption("OSOBNA strategia testowa: **S&P 500 futures ES=F**, dane Yahoo. "
-           "**NIE jest to CFD US500 z Capital.com!** "
-           "GitHub uruchamia skaner około co 15 min w dni robocze; "
-           "wykonania mogą się opóźniać. Wszystkie dane są publiczne, "
-           "bez kont i kluczy API.")
+st.subheader("🗃️ GitHub PAPER — przygotowane archiwum futures")
+st.warning("Skaner GitHub jest przygotowany, ale **harmonogram NIE JEST AKTYWNY**. "
+           "GitHub odrzucił konfigurację cyklicznych wywołań; "
+           "nie twierdzimy, że skanuje rynek po zamknięciu strony.")
+st.caption("Przygotowany oddzielny model ES=F (Yahoo futures, NIE Capital.com US500 CFD). "
+           "Bez kont, kluczy i wydatków OpenAI. "
+           "Publiczne CSV pojawią się dopiero po udanym uruchomieniu skanera.")
 
 @st.cache_data(ttl=180, show_spinner=False)
 def github_futures_history():
@@ -499,8 +500,9 @@ def github_futures_panel():
     try:
         status, history = github_futures_history()
         if status is None:
-            st.info("Skaner GitHub oczekuje na pierwszy zapis. "
-                    "Nie pokazujemy wymyślonych wyników.")
+            st.info("Brak uruchomionych skanów GitHub. "
+                    "Kod i testy skanera są przygotowane, "
+                    "ale harmonogram nie przeszedł walidacji GitHub.")
             return
         checked = pd.Timestamp(status["checked_utc"]).tz_convert(
             "Europe/Warsaw").strftime("%d.%m.%Y %H:%M")
