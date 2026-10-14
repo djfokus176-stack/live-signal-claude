@@ -184,3 +184,35 @@ Opcja CSV umożliwia zapis dzisiejszego zestawienia.
 wyników w lokalnym SQLite, nie dowodzi to, że bot nie analizował rynku:
 mógł trzymać WAIT lub baza mogła zniknąć po restarcie Streamlit.
 To nie jest historia z GitHub 24/7; tamten skaner pozostaje nieaktywny.
+
+## 14.10.2026 — automatyczne wejścia LONG/SHORT i rzeczywiste rozliczenie PAPER
+
+Użytkownik nie musi klikać `ANALIZUJ TERAZ`: ustawiony domyślnie
+**AUTO PAPER co 15 minut przy aktywnej stronie** czyta zamknięte świece
+z wybranego źródła (dla US500 z Capital.com DEMO, NIE z widżetu
+TradingView) i ocenia EMA9/21, RSI i momentum.
+
+- LONG lub SHORT, przy świeżych danych, tworzy JEDNO hipotetyczne
+  wejście z 6 horyzontami rozliczenia 1/3/5/15/30/60 minut.
+- **Wirtualne wejścia LONG/SHORT — PLUS/MINUS**: domyślna
+  pozycja 15-minutowa. Po pierwszej zamkniętej świecy następującej
+  po sygnale zapisujemy szacunkową cenę wejścia; po zakończeniu 15 minut
+  zamykamy hipotetyczną pozycję. Przy braku danych `BRAK DANYCH`
+  zamiast wymyślonych wyników. Pokazujemy osobno ceny wejścia/wyjścia,
+  godziny polskie, kierunek, punkty i netto procenty.
+- LONG: symulowane kupno po ask, sprzedaż po bid; SHORT: odwrotnie.
+  Dodatkowe 0,08% kosztu round-trip jest WYŁĄCZNIE symulacją.
+  To nie są zlecenia brokerowi ani realne PLN zysku.
+- **Historia skanów bota** zapisuje każdą analizę AUTO/RĘCZNY w lokalnej
+  bazie, również WAIT, brak nowego zapisu z blokady 15 minut oraz
+  liczbę przeczytanych nagłówków RSS i darmowy sentyment VADER.
+  AUTO **nigdy nie wywołuje płatnego OpenAI API**.
+- RSS to kontekst i notatki badawcze, a nie zweryfikowany sygnał.
+  Decyzje LONG/SHORT są nadal oparte na świecach i technicznych
+  wskaźnikach — nie twierdzimy, że nagłówek przewiduje cenę.
+- Testy obejmują rejestrację wejścia przed planowanym wyjściem,
+  LONG, SHORT, wyniki netto, WAIT i blokadę duplikowania testów.
+
+**WAŻNE: ta funkcjonalność działa tylko gdy aplikacja Streamlit jest aktywna.
+Nie ma niezawodnego skanowania 24/7 po zamknięciu strony ani trwałej bazy
+SQLite. GitHub scheduler w tym repo pozostaje NIEAKTYWNY.**

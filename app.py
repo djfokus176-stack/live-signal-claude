@@ -9,6 +9,7 @@ import streamlit as st
 
 import data_sources as ds
 import store
+import paper_dashboard
 from signal_logic import evaluate
 from daily_report import today_activity
 from paper_scheduler import auto_scan_due
@@ -291,6 +292,32 @@ def bot_and_log():
         else:
             issue = ("WAIT — bez prognozy LONG/SHORT i bez nowego testu. "
                      + result["reason"])
+        # Every scheduled/manual scan is audited, including WAIT.
+        # RSS + VADER are free and contextual; never call paid OpenAI here.
+        titles, headline_score = (), None
+        try:
+            # Do not block offline startup / closed market just to fetch RSS.
+            age = result.get("age_min")
+            if (result.get("bars", 0) >= 60 and
+                    age is not None and 0 <= age <= 2.5):
+                titles = tuple(get_news(symbol))
+                if titles:
+                    headline_score, _ = news_score(titles, symbol, False, "")
+        except Exception:
+            pass
+        audit_result = ("ZAPISANO" if saved else
+                        "BLAD_ZAPISU" if issue.startswith("Błąd") else
+                        "BLOKADA" if result["side"] != "WAIT" else "WAIT")
+        try:
+            store.log_scan(symbol, actual_source, now, origin, result,
+                           audit_result, news_score=headline_score,
+                           news_titles=titles)
+        except Exception:
+            st.warning("Nie udało się zapisać historii skanów.")
+        st.session_state["claude_news_context"] = {
+            "key": current_key, "count": len(titles),
+            "score": headline_score, "titles": titles[:3],
+        }
         st.session_state["last_bot_v5"] = {
             "key": current_key, "analysis": result, "time": now.isoformat(),
             "saved": saved, "message": issue, "origin": origin,
@@ -346,7 +373,7 @@ def bot_and_log():
 
 
 st.title("CLAUDE LIVE SIGNAL — PROGRAM 2")
-st.caption("V5 AUTO PAPER · kontrola cen · osobne wyniki dla kolejnych wersji modelu")
+st.caption("V5 AUTO PAPER · wirtualne wejścia 15m i automatyczne wiadomości RSS")
 st.caption("Duże świece + przycisk analizy + niezależne wyniki PAPER. "
            "Nie zmienia PROGRAMU 1: SP500 AI PRO.")
 
@@ -406,6 +433,15 @@ def today_panel():
                    "bazy. Nie przedstawiamy niepotwierdzonych typów.")
 
 today_panel()
+
+@st.fragment(run_every=refresh)
+def paper_position_audit():
+    current_source = st.session_state.get(
+        "claude_last_source_" + symbol,
+        "Capital.com DEMO" if symbol == "CAPITAL_US500" else "Yahoo")
+    paper_dashboard.render(symbol, current_source)
+
+paper_position_audit()
 
 st.divider()
 st.subheader("📒 Dziennik i rozliczenia — tylko PROGRAM 2")

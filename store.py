@@ -40,6 +40,26 @@ def db():
         conn.execute("ALTER TABLE signals ADD COLUMN origin TEXT NOT NULL DEFAULT 'MANUAL'")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_journal_lookup
                     ON signals(symbol, source, model, status)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS paper_scans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_utc TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        source TEXT NOT NULL,
+        model TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        result TEXT NOT NULL,
+        note TEXT NOT NULL,
+        score_long INTEGER,
+        reference_price REAL,
+        closed_bars INTEGER,
+        age_minutes REAL,
+        news_score REAL,
+        news_count INTEGER NOT NULL DEFAULT 0,
+        news_sample TEXT NOT NULL DEFAULT ''
+    )""")
+    conn.execute("""CREATE INDEX IF NOT EXISTS idx_scans_today
+                    ON paper_scans(created_utc, symbol, model)""")
     try:
         yield conn
         conn.commit()
@@ -79,71 +99,93 @@ def log_signal(symbol, source, side, price, now, cost_pct=0.08,
 
 
 def settle(symbol, source, bars, now, model=MODEL):
-    """Settle only from *already closed* 1-minute candles, never future data.
-    The target is measured from the signal timestamp, not from the fill.
-    For broker bid/ask candles, spread is included by using executable sides.
-    `cost_pct` is additional round-trip transaction cost, fixed at signal time.
+    """Reconcile simulated OPEN and CLOSED positions using only finished M1 bars.
+
+    The FIRST observed valid next-minute open is the hypothetical PAPER entry.
+    Record the entry as soon as that candle closes, not only when target time
+    has elapsed. Exit uses the candle close reached by the target horizon.
+    Capital DEMO uses ASK on long entry / BID on short entry and vice versa.
+    If original entry/exit candles are missing, NEVER fabricate a trade.
     """
-    if bars.empty:
+    if bars is None or bars.empty:
         return 0
     now = pd.Timestamp(now).tz_convert("UTC")
     bars = bars.copy().sort_index()
+    bars.index = pd.to_datetime(bars.index, utc=True)
     bars = bars[~bars.index.duplicated(keep="last")]
     bars = bars.loc[bars.index + pd.Timedelta(minutes=1) <= now]
     if bars.empty:
         return 0
     done = 0
+    has_spread = all(key in bars.columns
+                     for key in ("OpenBid", "OpenAsk", "CloseBid", "CloseAsk"))
     with db() as c:
         if model is None:
-            # Settle historical pending signals too, after V3/V4 -> V5 upgrade.
-            rows = c.execute("""SELECT id, created_utc, horizon, side, cost_pct
+            rows = c.execute("""SELECT id, created_utc, horizon, side, cost_pct,
+                                       entry_utc, entry_price
                 FROM signals WHERE symbol=? AND source=? AND status='OCZEKUJE'""",
                 (symbol, source)).fetchall()
         else:
-            rows = c.execute("""SELECT id, created_utc, horizon, side, cost_pct
-                FROM signals WHERE symbol=? AND source=? AND model=? AND status='OCZEKUJE'""",
+            rows = c.execute("""SELECT id, created_utc, horizon, side, cost_pct,
+                                       entry_utc, entry_price
+                FROM signals WHERE symbol=? AND source=? AND model=?
+                    AND status='OCZEKUJE'""",
                 (symbol, source, model)).fetchall()
-        for signal_id, created_str, hz, side, cost_pct in rows:
-            created = pd.Timestamp(created_str)
+        for signal_id, created_str, hz, side, cost_pct, known_entry, known_price in rows:
+            created = pd.Timestamp(created_str).tz_convert("UTC")
             target = created + pd.Timedelta(minutes=hz)
-            if now < target:
-                continue
-            possible_entries = bars.loc[bars.index > created]
-            if possible_entries.empty:
-                if now - target >= MISSING_AFTER:
-                    c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?", (signal_id,))
+            entry_col = ("OpenAsk" if side == "LONG" else "OpenBid") if has_spread else "Open"
+            exit_col = ("CloseBid" if side == "LONG" else "CloseAsk") if has_spread else "Close"
+
+            if known_entry and known_price is not None:
+                entry_t = pd.Timestamp(known_entry).tz_convert("UTC")
+                p_in = float(known_price)
+            else:
+                possible_entries = bars.loc[bars.index > created]
+                if possible_entries.empty:
+                    if now - target >= MISSING_AFTER:
+                        c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?",
+                                  (signal_id,))
+                        done += 1
+                    continue
+                entry_t = possible_entries.index[0]
+                if entry_t >= target or entry_t - created > MAX_GAP:
+                    if now >= target:
+                        c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?",
+                                  (signal_id,))
+                        done += 1
+                    continue
+                p_in = float(bars.loc[entry_t, entry_col])
+                if not pd.notna(p_in) or not 0 < p_in < float("inf"):
+                    c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?",
+                              (signal_id,))
                     done += 1
-                continue
-            entry_t = possible_entries.index[0]
-            # Never fabricate a position that opens only after its planned exit.
-            if entry_t >= target or entry_t - created > MAX_GAP:
-                c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?", (signal_id,))
-                done += 1
+                    continue
+                # Only a closed entry candle confirms the virtual fill.
+                c.execute("""UPDATE signals SET entry_utc=?, entry_price=?
+                             WHERE id=? AND status='OCZEKUJE'""",
+                          (entry_t.isoformat(), p_in, signal_id))
+
+            if now < target:
                 continue
             possible_exits = bars.loc[(bars.index >= entry_t) &
                 (bars.index + pd.Timedelta(minutes=1) >= target)]
             if possible_exits.empty:
                 if now - target >= MISSING_AFTER:
-                    c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?", (signal_id,))
+                    c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?",
+                              (signal_id,))
                     done += 1
                 continue
             exit_t = possible_exits.index[0]
-            if (exit_t + pd.Timedelta(minutes=1) - target) > MAX_GAP:
-                c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?", (signal_id,))
+            if exit_t + pd.Timedelta(minutes=1) - target > MAX_GAP:
+                c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?",
+                          (signal_id,))
                 done += 1
                 continue
-            # Capital.com CFD: execution at ask for buys and bid for sells.
-            has_spread = all(x in bars.columns for x in
-                ("OpenBid", "OpenAsk", "CloseBid", "CloseAsk"))
-            if has_spread:
-                entry_col = "OpenAsk" if side == "LONG" else "OpenBid"
-                exit_col = "CloseBid" if side == "LONG" else "CloseAsk"
-            else:
-                entry_col, exit_col = "Open", "Close"
-            p_in = float(bars.loc[entry_t, entry_col])
             p_out = float(bars.loc[exit_t, exit_col])
-            if p_in <= 0 or p_out <= 0:
-                c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?", (signal_id,))
+            if not pd.notna(p_out) or not 0 < p_out < float("inf"):
+                c.execute("UPDATE signals SET status='BRAK_DANYCH' WHERE id=?",
+                          (signal_id,))
                 done += 1
                 continue
             gross = ((p_out / p_in - 1) if side == "LONG" else
@@ -158,6 +200,60 @@ def settle(symbol, source, bars, now, model=MODEL):
             done += 1
     return done
 
+
+def log_scan(symbol, source, now, origin, opinion, result, news_score=None,
+             news_titles=(), model=MODEL):
+    """Audit each AUTO or MANUAL market scan, even when it decides WAIT.
+
+    Never includes login/API credentials; no trading or order placement.
+    """
+    import math
+    if origin not in ("AUTO", "MANUAL") or result not in (
+        "ZAPISANO", "BLOKADA", "WAIT", "BLAD_ZAPISU"):
+        raise ValueError("Nieznany status skanu PAPER")
+    now = pd.Timestamp(now)
+    if now.tzinfo is None:
+        raise ValueError("Czas skanu musi mieć strefę")
+    direction = str(opinion.get("side", "WAIT"))
+    if direction not in ("LONG", "SHORT", "WAIT"):
+        raise ValueError("Niepoprawna decyzja")
+    score = opinion.get("score_long")
+    ref = opinion.get("reference")
+    age = opinion.get("age_min")
+    def finite_or_none(x):
+        if x is None:
+            return None
+        x = float(x)
+        return x if math.isfinite(x) else None
+    titles = [str(x).replace("\n", " ").strip()[:180]
+              for x in tuple(news_titles)[:3]]
+    note = str(opinion.get("reason", ""))[:600]
+    with db() as c:
+        c.execute("""INSERT INTO paper_scans
+            (created_utc, symbol, source, model, origin, direction, result,
+             note, score_long, reference_price, closed_bars, age_minutes,
+             news_score, news_count, news_sample)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (now.tz_convert("UTC").isoformat(), symbol, source, model, origin,
+             direction, result, note, finite_or_none(score),
+             finite_or_none(ref), int(opinion.get("bars") or 0),
+             finite_or_none(age), finite_or_none(news_score),
+             len(tuple(news_titles)), " | ".join(titles)))
+
+
+def load_scans(symbol=None, model=None):
+    filters, args = [], []
+    if symbol:
+        filters.append("symbol=?")
+        args.append(symbol)
+    if model is not None:
+        filters.append("model=?")
+        args.append(model)
+    clause = " WHERE " + " AND ".join(filters) if filters else ""
+    with db() as c:
+        return pd.read_sql_query("SELECT * FROM paper_scans" + clause +
+                                 " ORDER BY created_utc DESC, id DESC",
+                                 c, params=args)
 
 def load(symbol=None, source=None, model=MODEL):
     # model=None is an explicit all-version historical export;
