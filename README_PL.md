@@ -113,7 +113,7 @@ Godzina nie jest gwarantowana: zaplanowane workflow mogą być opóźniane
 lub pomijane przez GitHub, a darmowy Yahoo może być chwilowo niedostępny.
 Nie ma tu żadnych sekretów i żadnego płatnego API OpenAI.
 
-- Harmonogram: `.github/workflows/public_futures_paper.yml`.
+- Harmonogram: sprawdzony `.github/workflows/tests.yml` (osobne zadanie `public_futures_paper`).
 - Silnik: `github_paper_worker.py` — ten sam heurystyczny
   `signal_logic.evaluate`, ale odrębne oznaczenie modelu
   `ema-rsi-v5-auto-futures-github`.
