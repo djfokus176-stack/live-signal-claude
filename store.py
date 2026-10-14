@@ -272,7 +272,7 @@ def restore_csv_backup(content):
         if src not in accepted_sources.get(sym, set()):
             raise ValueError("Nieznany instrument albo źródło w kopii")
         model = str(vals["model"])
-        if not model.startswith(("ema-rsi-click-", "ema9-21-news-")):
+        if not model.startswith(("ema-rsi-click-", "ema9-21-news-", "ema-rsi-v5-")):
             raise ValueError("Niezgodna wersja modelu w kopii")
         side = str(vals["side"])
         status = str(vals["status"])
