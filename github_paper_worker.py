@@ -136,25 +136,20 @@ def run_once(bars: pd.DataFrame, now: pd.Timestamp,
 
 def main():
     now = pd.Timestamp.now(tz="UTC")
+    feed_error = None
     try:
         bars = data_sources.yahoo_bars(SYMBOL)
-        result = run_once(bars, now, OUTPUT_DIR)
     except Exception as exc:
-        # Never write traceback/credentials to an openly browsable status file.
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        result = {
-            "checked_utc": now.isoformat(), "instrument": SYMBOL,
-            "source": SOURCE, "model": MODEL,
-            "feed_kind": "PUBLIC_FUTURES_PROXY_NOT_CAPITAL_US500",
-            "status": "ERROR", "error_type": type(exc).__name__,
-            "new_forecasts": 0,
-        }
+        # A Yahoo outage is a NO BET, never a fake price or a failed order.
+        bars = pd.DataFrame()
+        feed_error = type(exc).__name__
+    result = run_once(bars, now, OUTPUT_DIR)
+    if feed_error:
+        result["status"] = "DATA_SOURCE_ERROR"
+        result["error_type"] = feed_error
         STATUS_FILE.write_text(
             json.dumps(result, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8")
-        # Fail the workflow visibly. A future run can retry automatically.
-        print("PAPER data feed/storage failed:", type(exc).__name__)
-        raise
     print("PAPER futures check:", result["status"],
           result["side"], "new forecasts:", result["new_forecasts"],
           "resolved:", result["resolved_horizon_rows"])
