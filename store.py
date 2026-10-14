@@ -262,17 +262,34 @@ def log_scan(symbol, source, now, origin, opinion, result, news_score=None,
     titles = [str(x).replace("\n", " ").strip()[:180]
               for x in tuple(news_titles)[:3]]
     note = str(opinion.get("reason", ""))[:600]
-    with db() as c:
-        c.execute("""INSERT INTO paper_scans
-            (created_utc, symbol, source, model, origin, direction, result,
-             note, score_long, reference_price, closed_bars, age_minutes,
-             news_score, news_count, news_sample)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (now.tz_convert("UTC").isoformat(), symbol, source, model, origin,
-             direction, result, note, finite_or_none(score),
-             finite_or_none(ref), int(opinion.get("bars") or 0),
-             finite_or_none(age), finite_or_none(news_score),
-             len(tuple(news_titles)), " | ".join(titles)))
+    import time
+    values = (now.tz_convert("UTC").isoformat(), symbol, source, model, origin,
+              direction, result, note, finite_or_none(score),
+              finite_or_none(ref), int(opinion.get("bars") or 0),
+              finite_or_none(age), finite_or_none(news_score),
+              len(tuple(news_titles)), " | ".join(titles))
+    # Three retries protect the scan log from brief concurrent Streamlit
+    # fragment writes. An explicit transaction prevents partial inserts.
+    for attempt in range(3):
+        try:
+            with db() as c:
+                c.execute("BEGIN IMMEDIATE")
+                prior = c.execute("""SELECT 1 FROM paper_scans
+                    WHERE created_utc=? AND symbol=? AND source=? AND model=?
+                      AND origin=? LIMIT 1""",
+                    (values[0], values[1], values[2], values[3], values[4])).fetchone()
+                if not prior:
+                    c.execute("""INSERT INTO paper_scans
+                        (created_utc, symbol, source, model, origin, direction,
+                         result, note, score_long, reference_price, closed_bars,
+                         age_minutes, news_score, news_count, news_sample)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", values)
+            return True
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == 2:
+                raise
+            time.sleep(0.15 * (attempt + 1))
+    return False
 
 
 def load_scans(symbol=None, model=None):
