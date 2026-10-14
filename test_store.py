@@ -185,3 +185,55 @@ def test_csv_backup_rejects_corruption_without_partial_import(tmp_path, monkeypa
     with pytest.raises(ValueError):
         store.restore_csv_backup(exported)
     assert store.load(model=None).empty
+
+
+def test_auto_origin_and_single_cooldown_across_direction():
+    ts = pd.Timestamp("2026-10-14T10:20:01Z")
+    assert store.log_signal("CAPITAL_US500", "Capital.com DEMO",
+                            "LONG", 7800, ts, origin="AUTO") == 6
+    # A flip from LONG to SHORT within 15min is NOT a second independent bet.
+    assert store.log_signal("CAPITAL_US500", "Capital.com DEMO",
+                            "SHORT", 7802, ts + pd.Timedelta(minutes=3),
+                            origin="MANUAL") == 0
+    first = store.load("CAPITAL_US500")
+    assert len(first) == 6
+    assert set(first["origin"]) == {"AUTO"}
+    assert store.log_signal("CAPITAL_US500", "Capital.com DEMO",
+                            "SHORT", 7790, ts + pd.Timedelta(minutes=16),
+                            origin="MANUAL") == 6
+    df = store.load("CAPITAL_US500")
+    assert set(df["origin"]) == {"AUTO", "MANUAL"}
+    assert df["created_utc"].nunique() == 2
+
+
+def test_settle_pending_v4_after_upgrade_to_v5():
+    ts = pd.Timestamp("2026-10-14 14:10:10", tz="UTC")
+    assert store.log_signal("CAPITAL_US500", "Capital.com DEMO",
+                            "LONG", 100, ts,
+                            model="ema-rsi-click-v4-audit") == 6
+    b = bars("2026-10-14 14:00", 150, step=0.3)
+    # Only current V5 pending by default. Legacy pending remain.
+    assert store.settle("CAPITAL_US500", "Capital.com DEMO",
+                        b, ts + pd.Timedelta(minutes=70)) == 0
+    assert set(store.load("CAPITAL_US500", model=None)["status"]) == {"OCZEKUJE"}
+    assert store.settle("CAPITAL_US500", "Capital.com DEMO",
+                        b, ts + pd.Timedelta(minutes=70), model=None) == 6
+    old = store.load("CAPITAL_US500", model="ema-rsi-click-v4-audit")
+    assert (old["status"] != "OCZEKUJE").all()
+
+
+def test_legacy_csv_without_origin_is_accepted(tmp_path, monkeypatch):
+    ts = pd.Timestamp("2026-10-14T10:20:01Z")
+    store.log_signal("SPY", "Yahoo", "LONG", 100, ts)
+    legacy = store.load("SPY").drop(columns=["origin"])
+    backup = legacy.to_csv(index=False).encode("utf-8-sig")
+    monkeypatch.setattr(store, "DB", str(tmp_path / "fresh-restored.db"))
+    assert store.restore_csv_backup(backup) == 6
+    assert set(store.load("SPY")["origin"]) == {"MANUAL"}
+
+
+def test_unknown_origin_rejected():
+    ts = pd.Timestamp("2026-10-14T10:20:01Z")
+    with pytest.raises(ValueError):
+        store.log_signal("SPY", "Yahoo", "SHORT", 100, ts, origin="REAL")
+    assert store.load(model=None).empty
