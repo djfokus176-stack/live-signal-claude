@@ -296,9 +296,13 @@ def bot_and_log():
         # RSS + VADER are free and contextual; never call paid OpenAI here.
         titles, headline_score = (), None
         try:
-            titles = tuple(get_news(symbol))
-            if titles:
-                headline_score, _ = news_score(titles, symbol, False, "")
+            # Do not block offline startup / closed market just to fetch RSS.
+            age = result.get("age_min")
+            if (result.get("bars", 0) >= 60 and
+                    age is not None and 0 <= age <= 2.5):
+                titles = tuple(get_news(symbol))
+                if titles:
+                    headline_score, _ = news_score(titles, symbol, False, "")
         except Exception:
             pass
         audit_result = ("ZAPISANO" if saved else
