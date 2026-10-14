@@ -18,7 +18,7 @@ def test_does_not_double_log_on_repeated_30_second_reruns():
 def test_clock_backwards_and_utc_timezones():
     now = pd.Timestamp("2026-10-14T10:45:00Z")
     assert not auto_scan_due(now, now - pd.Timedelta(minutes=3))
-    assert auto_scan_due(now, pd.Timestamp("2026-10-14 12:00", tz="Europe/Warsaw"))
+    assert auto_scan_due(now, pd.Timestamp("2026-10-14 13:00", tz="Europe/Warsaw"))
 
 
 def test_naive_now_fails_closed():
