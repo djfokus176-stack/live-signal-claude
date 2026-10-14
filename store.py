@@ -16,7 +16,15 @@ MODEL = "ema-rsi-v5-auto-paper"
 
 @contextmanager
 def db():
-    conn = sqlite3.connect(DB, timeout=15)
+    # Four Streamlit fragments may read/write at once. Give writes time to
+    # acquire the lock, and use WAL where supported by the filesystem.
+    conn = sqlite3.connect(DB, timeout=30)
+    conn.execute("PRAGMA busy_timeout=30000")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        # Some hosted filesystems don't support WAL; normal SQLite still works.
+        pass
     conn.execute("""CREATE TABLE IF NOT EXISTS signals (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         symbol TEXT NOT NULL,
@@ -58,11 +66,37 @@ def db():
         news_count INTEGER NOT NULL DEFAULT 0,
         news_sample TEXT NOT NULL DEFAULT ''
     )""")
+    # A Streamlit hot update may retain an older SQLite schema. Reconcile
+    # additive columns before indexing/inserting instead of failing forever.
+    scan_columns = {item[1] for item in conn.execute("PRAGMA table_info(paper_scans)")}
+    scan_defaults = {
+        "created_utc": "TEXT NOT NULL DEFAULT ''",
+        "symbol": "TEXT NOT NULL DEFAULT ''",
+        "source": "TEXT NOT NULL DEFAULT ''",
+        "model": "TEXT NOT NULL DEFAULT ''",
+        "origin": "TEXT NOT NULL DEFAULT 'MANUAL'",
+        "direction": "TEXT NOT NULL DEFAULT 'WAIT'",
+        "result": "TEXT NOT NULL DEFAULT 'WAIT'",
+        "note": "TEXT NOT NULL DEFAULT ''",
+        "score_long": "INTEGER",
+        "reference_price": "REAL",
+        "closed_bars": "INTEGER",
+        "age_minutes": "REAL",
+        "news_score": "REAL",
+        "news_count": "INTEGER NOT NULL DEFAULT 0",
+        "news_sample": "TEXT NOT NULL DEFAULT ''",
+    }
+    for column, declaration in scan_defaults.items():
+        if column not in scan_columns:
+            conn.execute(f"ALTER TABLE paper_scans ADD COLUMN {column} {declaration}")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_scans_today
                     ON paper_scans(created_utc, symbol, model)""")
     try:
         yield conn
         conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
