@@ -10,6 +10,7 @@ import streamlit as st
 import data_sources as ds
 import store
 from signal_logic import evaluate
+from daily_report import today_activity
 from paper_scheduler import auto_scan_due
 
 st.set_page_config(page_title="CLAUDE LIVE SIGNAL • PAPER", page_icon="📈", layout="wide")
@@ -357,6 +358,54 @@ with chart_col:
 with assistant_col:
     st.subheader("Twój bot")
     bot_and_log()
+
+st.divider()
+st.subheader("📆 Typy z dzisiaj — PROGRAM 2")
+st.caption("Wyłącznie faktycznie zapisane analizy PAPER ze wszystkich "
+           "wersji bota w tej lokalnej bazie. Godzina polska. "
+           "Nie zawiera niezapisanych WAIT ani prognoz z GitHuba.")
+
+@st.fragment(run_every=refresh)
+def today_panel():
+    try:
+        all_rows = store.load(model=None)
+        now_today = pd.Timestamp.now(tz="Europe/Warsaw")
+        today = today_activity(all_rows, now_today)
+        st.caption(f'Dzień w Polsce: {now_today.strftime("%d.%m.%Y")} · '
+                   "źródło: lokalny dziennik Streamlit")
+        forecast_count = len(today)
+        horizons = ["1 min", "3 min", "5 min", "15 min", "30 min", "60 min"]
+        outcomes = today[horizons].stack() if forecast_count else pd.Series(dtype=str)
+        won = int(outcomes.astype(str).str.startswith("TRAFIONY").sum())
+        lost = int(outcomes.astype(str).str.startswith("BLEDNY").sum())
+        done = int(outcomes.astype(str).str.startswith(
+            ("TRAFIONY", "BLEDNY", "REMIS")).sum())
+        a, b, c, d = st.columns(4)
+        a.metric("Zapisane prognozy", forecast_count)
+        b.metric("Rozliczone horyzonty", done)
+        c.metric("Trafione", won)
+        d.metric("Błędne", lost)
+        if today.empty:
+            st.info("W tej lokalnej bazie nie ma dziś zapisanych "
+                    "prognoz LONG/SHORT. To nie dowodzi, że bot nie skanował: "
+                    "mógł wydać WAIT albo lokalna baza mogła zniknąć "
+                    "przy restarcie Streamlit.")
+        else:
+            st.dataframe(today, use_container_width=True,
+                         hide_index=True)
+            st.download_button("⬇️ Pobierz dzisiejsze typy CSV",
+                               data=today.to_csv(index=False).encode("utf-8-sig"),
+                               file_name="claude_typy_dzisiaj.csv", mime="text/csv",
+                               use_container_width=False)
+        st.caption("1 zapisany LONG/SHORT = 1 prognoza i maksymalnie "
+                   "6 powiązanych horyzontów. To nie są niezależne zakłady "
+                   "ani rzeczywiste ROI. Starsze modele są widoczne, "
+                   "ale ich skuteczności nie sumujemy z V5.")
+    except Exception:
+        st.warning("Nie udało się odczytać dzisiejszych zapisów z lokalnej "
+                   "bazy. Nie przedstawiamy niepotwierdzonych typów.")
+
+today_panel()
 
 st.divider()
 st.subheader("📒 Dziennik i rozliczenia — tylko PROGRAM 2")
