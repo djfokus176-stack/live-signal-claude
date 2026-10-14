@@ -1,5 +1,5 @@
 name: CLAUDE PROGRAM 2 - Auto PAPER Futures (public)
-on:
+"on":
   schedule:
     # UTC. Offset from the top of the hour reduces queue delays.
     # Every 15 min during weekdays, irrespective of Streamlit uptime.
