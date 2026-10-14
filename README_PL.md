@@ -104,3 +104,60 @@ Testy lokalne i CI korzystają z udawanych cen, bez autoryzacji do prawdziwego A
 ## Co zostało poprawione 14.10.2026 — V5 AUTO PAPER
 
 - Uruchomiono **opcjonalną automatyzację PAPER co 15 minut w czasie aktywnej\n  sesji przeglądarki** (bez płatnego OpenAI API). Domyślnie włączona,\n  wyłączana przełącznikiem. Start skanowania w chwili otwarcia strony,\n  dalej maksymalnie raz na 15 minut. To nie jest osobny proces 24/7.\n- Bot zapisuje tylko kierunki LONG/SHORT przy poprawnych, świeżych świecach.\n  WAIT jest komunikatem bez nowej transakcji PAPER.\n- W dzienniku pojawiło się **AUTO** / **MANUAL**. Starsze wersje\n  bazy/plików CSV otrzymują oznaczenie MANUAL bez zmiany starych wyników.\n- Limit jednego testowego wejścia na 15 minut w obrębie instrumentu, źródła\n  i wersji modelu działa także przy natychmiastowym zwrocie LONG→SHORT.\n- Oczekujące testy V3/V4 są ponownie sprawdzane, jeśli dostępne są historyczne\n  świece do ich uczciwego rozliczenia. Nie rekonstruujemy cen, których\n  źródło nie udostępnia. Starsze wyniki wciąż pozostają w osobnych tabelach.\n- CI bada także automat 15-minutowy, blokady, przywracanie starszych CSV\n  i rozliczanie oczekujących testów ze wcześniejszych modeli.\n\n**Ograniczenie:** ta zmiana nie pozwala na zbieranie danych przy zamkniętej\nprzeglądarce i nie rozwiązuje utraty SQLite po restarcie Streamlit.\nNie przenosimy sekretów Capital.com do GitHub Actions. Do prawdziwego 24/7\nkonieczny byłby osobny bezpieczny harmonogram i trwały magazyn; nie są\njeszcze uruchomione i nie należy twierdzić inaczej.\n
+## 14.10.2026 — bezpłatna automatyzacja bez otwartej przeglądarki
+
+**Osobny skaner GitHub Actions dla kontraktu ES=F (publiczne Yahoo),
+NIE dla CFD US500 Capital.com.** GitHub uruchamia go co około 15 min
+(w dni robocze, UTC) także wtedy, gdy Streamlit nie jest otwarty.
+Godzina nie jest gwarantowana: zaplanowane workflow mogą być opóźniane
+lub pomijane przez GitHub, a darmowy Yahoo może być chwilowo niedostępny.
+Nie ma tu żadnych sekretów i żadnego płatnego API OpenAI.
+
+- Harmonogram: sprawdzony `.github/workflows/tests.yml` (osobne zadanie `public_futures_paper`).
+- Silnik: `github_paper_worker.py` — ten sam heurystyczny
+  `signal_logic.evaluate`, ale odrębne oznaczenie modelu
+  `ema-rsi-v5-auto-futures-github`.
+- Trwały zapis: publiczne pliki tygodniowe
+  `data/auto_futures/ES_F_RRRR-Www.csv` i `status.json`.
+  Zapis jest w repo GitHub, nie w nietrwałym SQLite Streamlit.
+- Jeden moment testowy LONG/SHORT jest rozliczany na 1/3/5/15/30/60 min;
+  przy braku danych lub rynku WAIT / NO DATA. Żadnych realnych zleceń.
+- Rozliczane są sygnały z ostatnich dwóch tygodni w miarę dostępności
+  minutowych świec. Starsze tygodnie pozostają w historii repo.
+  Testy przy granicy tygodnia są kontynuowane w kolejnym tygodniu.
+- Na dole istniejącej aplikacji Claude widać niezależny panel
+  „GitHub AUTO PAPER — historia bez otwartej strony”,
+  podgląd ostatniego skanu, statystyki i eksport CSV.
+
+### Koszt i prywatność
+
+GitHub Actions standardowych runnerów w **publicznym** repozytorium jest
+zgodnie z zasadami GitHub bezpłatny. Publiczne są też wyniki PAPER;
+żadnych loginów, kluczy ani danych konta nie zapisujemy do repozytorium.
+Wersja nie korzysta z OpenAI API, czyli nie zużywa Twojego salda 9,99 USD.
+
+### Czego ta automatyzacja NIE robi
+
+- **Nie pobiera notowań Capital.com przez GH Actions**. Klucze są
+  tylko w oddzielnych Streamlit Secrets, których GitHub nie posiada.
+- **Nie porównuj kursu ES=F z kursem US500 CFD 1:1.** Futures
+  i CFD mają różne kwotowania, godziny i koszty.
+- **Nie działa niezawodnie 24/7.** GitHub może opóźniać/wyłączać
+  zaplanowane uruchomienia, Yahoo może ograniczać dostęp, a w weekend
+  rynek futures jest zamknięty. Nie ma płatnego SLA.
+- Gdy zechcesz rejestrować dokładnie `Capital.com DEMO US500`
+  niezależnie od otwartej strony, konieczne jest **jednorazowe**
+  skonfigurowanie prywatnych `CAPITAL_*` w środowisku uruchamiającym
+  skaner, np. GH Secrets, wraz z odpowiednim reżimem ochrony danych.
+  Nie zrobię tego przez kopiowanie haseł do publicznego repo ani czatu.
+
+### Weryfikacja
+
+```bash
+python -m pytest -q
+# Po mergu: GitHub → Actions → CLAUDE PROGRAM 2 - Auto PAPER Futures (public)
+# → Run workflow, lub poczekaj na pierwszy harmonogram.
+```
+
+Seria publicznego ES=F zawsze pozostaje **oddzielna** od
+ręcznych/aktywnych testów CFD i od wyników PROGRAMU 1.

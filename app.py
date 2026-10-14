@@ -454,6 +454,96 @@ def journal_panel():
 
 
 journal_panel()
+
+st.divider()
+st.subheader("🗃️ GitHub AUTO PAPER — historia bez otwartej strony")
+st.caption("OSOBNA strategia testowa: **S&P 500 futures ES=F**, dane Yahoo. "
+           "**NIE jest to CFD US500 z Capital.com!** "
+           "GitHub uruchamia skaner około co 15 min w dni robocze; "
+           "wykonania mogą się opóźniać. Wszystkie dane są publiczne, "
+           "bez kont i kluczy API.")
+
+@st.cache_data(ttl=180, show_spinner=False)
+def github_futures_history():
+    import io
+    import requests
+    root = ("https://raw.githubusercontent.com/"
+            "djfokus176-stack/live-signal-claude/main/data/auto_futures/")
+    status_response = requests.get(root + "status.json", timeout=10)
+    if status_response.status_code == 404:
+        return None, pd.DataFrame()
+    status_response.raise_for_status()
+    status = status_response.json()
+    now_time = pd.Timestamp.now(tz="UTC")
+    names = []
+    for t in (now_time - pd.Timedelta(days=7), now_time):
+        year, week, _ = t.isocalendar()
+        name = f"ES_F_{year}-W{week:02d}.csv"
+        if name not in names:
+            names.append(name)
+    frames = []
+    for name in names:
+        resp = requests.get(root + name, timeout=10)
+        if resp.status_code == 404:
+            continue
+        resp.raise_for_status()
+        frame = pd.read_csv(io.BytesIO(resp.content))
+        if not frame.empty:
+            frames.append(frame)
+    data = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    return status, data
+
+
+@st.fragment(run_every=refresh)
+def github_futures_panel():
+    try:
+        status, history = github_futures_history()
+        if status is None:
+            st.info("Skaner GitHub oczekuje na pierwszy zapis. "
+                    "Nie pokazujemy wymyślonych wyników.")
+            return
+        checked = pd.Timestamp(status["checked_utc"]).tz_convert(
+            "Europe/Warsaw").strftime("%d.%m.%Y %H:%M")
+        source_state = status.get("status", "NIEZNANY")
+        st.caption(f'Ostatnia próba GitHub: {checked} (Polska) · '
+                   f'wynik: {source_state} · wyłącznie ES=F Yahoo.')
+        if source_state == "ERROR":
+            st.warning("Automat zgłosił problem z Yahoo lub zapisem. "
+                       "To nie jest sygnał tradingowy.")
+        if history.empty:
+            st.info("Brak zapisanych prognoz futures. Może to oznaczać "
+                    "zamknięty rynek, brak danych lub same decyzje WAIT.")
+            return
+        history = history.loc[
+            (history["symbol"] == "ES=F") &
+            (history["source"] == "Yahoo") &
+            (history["model"] == "ema-rsi-v5-auto-futures-github")
+        ]
+        recorded = history["created_utc"].nunique()
+        final_statuses = ("TRAFIONY", "BLEDNY", "REMIS")
+        settled = history[history["status"].isin(final_statuses)]
+        wins = int((settled["status"] == "TRAFIONY").sum())
+        a, b, c = st.columns(3)
+        a.metric("Osobne prognozy ES=F", int(recorded))
+        b.metric("Rozliczone horyzonty", len(settled))
+        c.metric("Trafione horyzonty", f"{wins}/{len(settled)}")
+        st.caption("Jedna prognoza ma 6 horyzontów, które **nie są** "
+                   "niezależnymi transakcjami ani portfelem. "
+                   "Nie łączymy tej serii z CAPITAL_US500.")
+        shown = history.sort_values(
+            ["created_utc", "horizon"], ascending=[False, True])
+        st.dataframe(shown[["created_utc", "side", "horizon", "status",
+                            "gross_pct", "net_pct"]].head(60),
+                     use_container_width=True, hide_index=True)
+        st.download_button("⬇️ Pobierz historię ES=F GitHub (ostatnie 2 tygodnie)",
+                           data=history.to_csv(index=False).encode("utf-8-sig"),
+                           mime="text/csv", file_name="claude_esf_auto_github.csv")
+    except Exception:
+        st.warning("Nie udało się chwilowo odczytać publicznego archiwum "
+                   "GitHub. Nie wpływa to na analizy Capital.com.")
+
+
+github_futures_panel()
 with st.expander("📰 Wiadomości z rana i południa — kontekst, nie sygnał", expanded=False):
     st.caption("Wiadomości nie przełączają automatycznie LONG/SHORT. "
                "Nagłówki nie zastępują zweryfikowanych danych cenowych.")
