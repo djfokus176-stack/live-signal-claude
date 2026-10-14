@@ -291,6 +291,28 @@ def bot_and_log():
         else:
             issue = ("WAIT — bez prognozy LONG/SHORT i bez nowego testu. "
                      + result["reason"])
+        # Every scheduled/manual scan is audited, including WAIT.
+        # RSS + VADER are free and contextual; never call paid OpenAI here.
+        titles, headline_score = (), None
+        try:
+            titles = tuple(get_news(symbol))
+            if titles:
+                headline_score, _ = news_score(titles, symbol, False, "")
+        except Exception:
+            pass
+        audit_result = ("ZAPISANO" if saved else
+                        "BLAD_ZAPISU" if issue.startswith("Błąd") else
+                        "BLOKADA" if result["side"] != "WAIT" else "WAIT")
+        try:
+            store.log_scan(symbol, actual_source, now, origin, result,
+                           audit_result, news_score=headline_score,
+                           news_titles=titles)
+        except Exception:
+            st.warning("Nie udało się zapisać historii skanów.")
+        st.session_state["claude_news_context"] = {
+            "key": current_key, "count": len(titles),
+            "score": headline_score, "titles": titles[:3],
+        }
         st.session_state["last_bot_v5"] = {
             "key": current_key, "analysis": result, "time": now.isoformat(),
             "saved": saved, "message": issue, "origin": origin,
