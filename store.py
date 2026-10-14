@@ -35,9 +35,9 @@ def db():
         origin TEXT NOT NULL DEFAULT 'MANUAL'
     )""")
     # Old SQLite files were created before the origin provenance column.
-    existing_cols = {item[1] for item in c.execute("PRAGMA table_info(signals)")}
+    existing_cols = {item[1] for item in conn.execute("PRAGMA table_info(signals)")}
     if "origin" not in existing_cols:
-        c.execute("ALTER TABLE signals ADD COLUMN origin TEXT NOT NULL DEFAULT 'MANUAL'")
+        conn.execute("ALTER TABLE signals ADD COLUMN origin TEXT NOT NULL DEFAULT 'MANUAL'")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_journal_lookup
                     ON signals(symbol, source, model, status)""")
     try:
