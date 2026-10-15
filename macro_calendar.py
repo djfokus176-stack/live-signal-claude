@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
+CALENDAR_ENGINE_VERSION = "bls-official-plus-2026-snapshot-v3"
 BLS_ICS = "https://www.bls.gov/schedule/news_release/bls.ics"
 NY = ZoneInfo("America/New_York")
 KEYWORDS = (
