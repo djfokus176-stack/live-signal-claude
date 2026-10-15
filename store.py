@@ -467,6 +467,10 @@ def restore_csv_backup(content):
         vals["horizon"] = hz
         vals["reference_price"] = ref
         vals["cost_pct"] = cost
+        # Pandas reads an empty string column as NaN by default; SQLite
+        # rationale is NOT NULL even for historical V2-V5 records.
+        vals["rationale"] = ("" if pd.isna(vals["rationale"]) else
+                             str(vals["rationale"])[:1200])
         prepared.append(tuple(vals[col] for col in BACKUP_COLUMNS))
 
     inserted = 0
