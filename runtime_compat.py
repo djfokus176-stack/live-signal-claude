@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import importlib
 
-MINIMUM_VERSION = 20261015
+MINIMUM_VERSION = 20261016
 REQUIRED = ("log_scan", "load_scans", "log_signal", "settle", "load")
 
 
