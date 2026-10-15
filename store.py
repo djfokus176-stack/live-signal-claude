@@ -8,12 +8,12 @@ from contextlib import contextmanager
 import pandas as pd
 
 # Increment when a new app deployment requires a refreshed Python module.
-STORE_API_VERSION = 20261015
+STORE_API_VERSION = 20261016
 DB = os.getenv("SIGNAL_DB", "signals_test.db")
 HORIZONS = (1, 3, 5, 15, 30, 60)
 MAX_GAP = pd.Timedelta(minutes=3)
 MISSING_AFTER = pd.Timedelta(hours=6)
-MODEL = "ema-rsi-v5-auto-paper"
+MODEL = "ema-rsi-mtf-macro-v6"
 
 
 @contextmanager
@@ -42,12 +42,15 @@ def db():
         entry_utc TEXT, exit_utc TEXT,
         entry_price REAL, exit_price REAL,
         gross_pct REAL, net_pct REAL,
-        origin TEXT NOT NULL DEFAULT 'MANUAL'
+        origin TEXT NOT NULL DEFAULT 'MANUAL',
+        rationale TEXT NOT NULL DEFAULT ''
     )""")
     # Old SQLite files were created before the origin provenance column.
     existing_cols = {item[1] for item in conn.execute("PRAGMA table_info(signals)")}
     if "origin" not in existing_cols:
         conn.execute("ALTER TABLE signals ADD COLUMN origin TEXT NOT NULL DEFAULT 'MANUAL'")
+    if "rationale" not in existing_cols:
+        conn.execute("ALTER TABLE signals ADD COLUMN rationale TEXT NOT NULL DEFAULT ''")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_journal_lookup
                     ON signals(symbol, source, model, status)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS paper_scans (
@@ -104,7 +107,8 @@ def db():
 
 
 def log_signal(symbol, source, side, price, now, cost_pct=0.08,
-               model=MODEL, cooldown_min=15, origin="MANUAL"):
+               model=MODEL, cooldown_min=15, origin="MANUAL",
+               rationale=""):
     if side not in ("LONG", "SHORT"):
         return 0
     if origin not in ("AUTO", "MANUAL"):
@@ -127,10 +131,11 @@ def log_signal(symbol, source, side, price, now, cost_pct=0.08,
         for hz in HORIZONS:
             c.execute("""INSERT INTO signals
                 (symbol, source, model, side, horizon, created_utc,
-                 reference_price, target_utc, cost_pct, origin)
-                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 reference_price, target_utc, cost_pct, origin, rationale)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (symbol, source, model, side, hz, now.isoformat(), float(price),
-                 (now + pd.Timedelta(minutes=hz)).isoformat(), float(cost_pct), origin))
+                 (now + pd.Timedelta(minutes=hz)).isoformat(), float(cost_pct),
+                 origin, str(rationale)[:1200]))
     return len(HORIZONS)
 
 
@@ -370,7 +375,7 @@ BACKUP_COLUMNS = (
     "symbol", "source", "model", "side", "horizon", "created_utc",
     "reference_price", "target_utc", "cost_pct", "status",
     "entry_utc", "exit_utc", "entry_price", "exit_price",
-    "gross_pct", "net_pct", "origin",
+    "gross_pct", "net_pct", "origin", "rationale",
 )
 
 
@@ -392,10 +397,12 @@ def restore_csv_backup(content):
     if frame.empty:
         return 0
     # Older V2-V4 exports have no origin column; those were manual tests.
-    if not set(BACKUP_COLUMNS[:-1]).issubset(frame.columns) or len(frame) > 10000:
+    if not set(BACKUP_COLUMNS[:-2]).issubset(frame.columns) or len(frame) > 10000:
         raise ValueError("To nie jest eksport dziennika Claude lub plik jest za duży")
     if "origin" not in frame.columns:
         frame["origin"] = "MANUAL"
+    if "rationale" not in frame.columns:
+        frame["rationale"] = ""
     accepted_status = {"OCZEKUJE", "TRAFIONY", "BLEDNY", "REMIS", "BRAK_DANYCH"}
     accepted_sources = {
         "SPY": {"Yahoo", "Alpaca IEX"},
@@ -421,7 +428,7 @@ def restore_csv_backup(content):
         if src not in accepted_sources.get(sym, set()):
             raise ValueError("Nieznany instrument albo źródło w kopii")
         model = str(vals["model"])
-        if not model.startswith(("ema-rsi-click-", "ema9-21-news-", "ema-rsi-v5-")):
+        if not model.startswith(("ema-rsi-click-", "ema9-21-news-", "ema-rsi-v5-", "ema-rsi-mtf-macro-")):
             raise ValueError("Niezgodna wersja modelu w kopii")
         side = str(vals["side"])
         status = str(vals["status"])
@@ -460,6 +467,10 @@ def restore_csv_backup(content):
         vals["horizon"] = hz
         vals["reference_price"] = ref
         vals["cost_pct"] = cost
+        # Pandas reads an empty string column as NaN by default; SQLite
+        # rationale is NOT NULL even for historical V2-V5 records.
+        vals["rationale"] = ("" if pd.isna(vals["rationale"]) else
+                             str(vals["rationale"])[:1200])
         prepared.append(tuple(vals[col] for col in BACKUP_COLUMNS))
 
     inserted = 0

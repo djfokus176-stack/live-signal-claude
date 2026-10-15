@@ -17,6 +17,9 @@ import paper_dashboard
 from signal_logic import evaluate
 from daily_report import today_activity
 from paper_scheduler import auto_scan_due
+from macro_calendar import load_official_calendar
+from market_context import filtered_decision
+import simple_ledger
 
 st.set_page_config(page_title="CLAUDE LIVE SIGNAL • PAPER", page_icon="📈", layout="wide")
 
@@ -85,11 +88,10 @@ with st.sidebar:
                            max_value=2.0, value=0.08, step=0.01)
     st.caption("Dla CFD spread bid/ask jest już uwzględniany w teście. "
                "Ten koszt to dodatkowe opłaty i poślizg.")
-    st.divider()
-    use_gpt = st.checkbox("Dodatkowa analiza newsów przez OpenAI (płatne API)",
-                          value=False, disabled=not bool(OPENAI_KEY))
-    model = st.text_input("Model OpenAI", value="gpt-4o-mini", disabled=not use_gpt)
-    st.caption("Brak realnych transakcji. Oddzielny dziennik i wersja modelu.")
+    st.caption("Bez hasła właściciela i bez płatnych analiz AI. "
+               "Wszystkie pozycje są wyłącznie PAPER.")
+    use_gpt = False
+    model = "gpt-4o-mini"
 
 @st.cache_data(ttl=20, show_spinner=False)
 def cached_prices(sym, wanted):
@@ -160,7 +162,15 @@ def get_news(sym):
     from urllib.parse import quote_plus
     url = ("https://news.google.com/rss/search?q=" +
            quote_plus(phrase + " when:1d") + "&hl=en-US&gl=US&ceid=US:en")
-    return tuple(e.title for e in feedparser.parse(url).entries[:10])
+    import requests
+    response = requests.get(url, timeout=8)
+    response.raise_for_status()
+    return tuple(e.title for e in feedparser.parse(response.content).entries[:10])
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def official_calendar():
+    return load_official_calendar()
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -241,8 +251,31 @@ def bot_and_log():
     if candles is None:
         candles = pd.DataFrame()
     candles = ds.closed_bars(candles, now) if not candles.empty else candles
-    opinion = evaluate(candles, now)
-    st.caption("Model: EMA9/21 + RSI + momentum · tylko zamknięte świece M1.")
+    base_opinion = evaluate(candles, now)
+    # LIVE model uses these macro/news values BEFORE any entry is considered.
+    titles, headline_score = (), None
+    try:
+        if base_opinion.get("age_min") is not None and (
+                0 <= base_opinion["age_min"] <= 2.5):
+            titles = tuple(get_news(symbol))
+            if titles:
+                headline_score, _ = news_score(titles, symbol, False, "")
+    except Exception:
+        titles, headline_score = (), None
+    try:
+        if (base_opinion.get("bars", 0) >= 60 and
+                base_opinion.get("age_min") is not None and
+                0 <= base_opinion["age_min"] <= 2.5):
+            official_events, calendar_ok = official_calendar()
+        else:
+            official_events, calendar_ok = (), False
+    except Exception:
+        official_events, calendar_ok = (), False
+    opinion = filtered_decision(base_opinion, candles, now,
+                                official_events, calendar_ok,
+                                headline_score, titles)
+    st.caption("Model: zamknięte M1 + trend H1 + struktura M15 + "
+               "wiadomości RSS + filtr publikacji USA ±15 minut.")
     st.caption(f"Bieżąca wersja: {store.MODEL} · wymagane horyzonty PAPER: "
                f'{", ".join(str(h) for h in store.HORIZONS)} min · '
                f'{opinion["bars"]} zamkniętych świec M1.')
@@ -287,7 +320,8 @@ def bot_and_log():
             try:
                 saved = store.log_signal(symbol, actual_source, result["side"],
                                          result["reference"], now, cost,
-                                         origin=origin)
+                                         origin=origin,
+                                         rationale=result.get("rationale", ""))
                 if saved == 0:
                     issue = ("Blokada 15 min od poprzedniego zapisu na "
                              "tym instrumencie — brak nowego testu.")
@@ -296,19 +330,8 @@ def bot_and_log():
         else:
             issue = ("WAIT — bez prognozy LONG/SHORT i bez nowego testu. "
                      + result["reason"])
-        # Every scheduled/manual scan is audited, including WAIT.
-        # RSS + VADER are free and contextual; never call paid OpenAI here.
-        titles, headline_score = (), None
-        try:
-            # Do not block offline startup / closed market just to fetch RSS.
-            age = result.get("age_min")
-            if (result.get("bars", 0) >= 60 and
-                    age is not None and 0 <= age <= 2.5):
-                titles = tuple(get_news(symbol))
-                if titles:
-                    headline_score, _ = news_score(titles, symbol, False, "")
-        except Exception:
-            pass
+        # RSS, VADER and macro data were evaluated BEFORE deciding the
+        # direction. Log exactly the context used at the entry decision.
         audit_result = ("ZAPISANO" if saved else
                         "BLAD_ZAPISU" if issue.startswith("Błąd") else
                         "BLOKADA" if result["side"] != "WAIT" else "WAIT")
@@ -387,9 +410,9 @@ def bot_and_log():
 
 
 st.title("CLAUDE LIVE SIGNAL — PROGRAM 2")
-st.caption("V5 AUTO PAPER · wirtualne wejścia 15m i automatyczne wiadomości RSS")
-st.caption("Duże świece + przycisk analizy + niezależne wyniki PAPER. "
-           "Nie zmienia PROGRAMU 1: SP500 AI PRO.")
+st.caption("US500 · sygnały badawcze PAPER · bez logowania właściciela")
+simple_ledger.render(symbol)
+st.divider()
 
 chart_col, assistant_col = st.columns([3.0, 1.3], gap="medium")
 with chart_col:
