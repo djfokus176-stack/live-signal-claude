@@ -66,7 +66,7 @@ TV_SYMBOLS = {
 
 with st.sidebar:
     st.markdown("### 🤖 CLAUDE LIVE SIGNAL")
-    st.caption("PROGRAM 2 · PAPER · wersja V5 AUTO")
+    st.caption("PROGRAM 2 · PAPER · V6: M15/H1 + wiadomości + makro")
     st.divider()
     # CFD first: US500 is traded during many morning hours as well as US session.
     names = ["S&P 500 CFD (Capital.com DEMO)", "S&P 500 ETF (SPY)",
