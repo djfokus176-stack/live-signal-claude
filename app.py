@@ -263,7 +263,12 @@ def bot_and_log():
     except Exception:
         titles, headline_score = (), None
     try:
-        official_events, calendar_ok = official_calendar()
+        if (base_opinion.get("bars", 0) >= 60 and
+                base_opinion.get("age_min") is not None and
+                0 <= base_opinion["age_min"] <= 2.5):
+            official_events, calendar_ok = official_calendar()
+        else:
+            official_events, calendar_ok = (), False
     except Exception:
         official_events, calendar_ok = (), False
     opinion = filtered_decision(base_opinion, candles, now,
