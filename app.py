@@ -9,6 +9,10 @@ import streamlit as st
 
 import data_sources as ds
 import store
+from runtime_compat import ensure_store_api, safe_failure_id
+# A hot-redeployed app.py can run alongside older Python module objects.
+# Revalidate at full reruns AND before writing, without resetting SQLite.
+store = ensure_store_api(store)
 import paper_dashboard
 from signal_logic import evaluate
 from daily_report import today_activity
@@ -309,16 +313,21 @@ def bot_and_log():
                         "BLAD_ZAPISU" if issue.startswith("Błąd") else
                         "BLOKADA" if result["side"] != "WAIT" else "WAIT")
         try:
-            store.log_scan(symbol, actual_source, now, origin, result,
-                           audit_result, news_score=headline_score,
-                           news_titles=titles)
+            # One more compatibility check: fragments may run without a full
+            # page rerun, preserving the old imported module across a deploy.
+            ensure_store_api(store).log_scan(
+                symbol, actual_source, now, origin, result, audit_result,
+                news_score=headline_score, news_titles=titles)
         except Exception as exc:
-            # Sanitized diagnostic: only Python exception class, never DB
-            # content, connection parameters or brokerage credentials.
-            st.warning("Historia skanów: zapis niedostępny "
-                       f"({type(exc).__name__}). Test PAPER, jeżeli został "
-                       "zapisany wcześniej, pozostaje w dzienniku pozycji. "
-                       "Bot ponowi kontrolę przy kolejnym skanie.")
+            st.warning(
+                "Historia skanów: zapis niedostępny "
+                f"({safe_failure_id(exc)}). "
+                "Pozycja PAPER, jeśli została zapisana, pozostaje w dzienniku. "
+                "Ta informacja nie potwierdza pomyślnego zapisu skanu.")
+            if auto_due:
+                # Retry a failed AUTO audit after ~2min, not after 15min.
+                st.session_state[auto_slot] = (
+                    now - pd.Timedelta(minutes=13)).isoformat()
         st.session_state["claude_news_context"] = {
             "key": current_key, "count": len(titles),
             "score": headline_score, "titles": titles[:3],
