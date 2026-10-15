@@ -27,3 +27,27 @@ def ensure_store_api(module, reloader=None):
     if not _compatible(module):
         raise RuntimeError("STARE_MODULY: Restart aplikacji wymagany")
     return module
+
+
+def safe_failure_id(exc):
+    """Only class, whitelisted attribute name, and source file/line.
+
+    No exception repr, SQL payload, request, tokens, account identifiers,
+    locals or untrusted error strings can be displayed publicly.
+    """
+    import os
+    import traceback
+    description = type(exc).__name__
+    if isinstance(exc, AttributeError):
+        missing = getattr(exc, "name", None)
+        allowed = {"log_scan", "load_scans", "log_signal", "load",
+                   "tz_convert", "execute", "fetchone", "commit"}
+        if missing in allowed:
+            description += ":" + missing
+    permitted_files = {"store.py", "app.py", "paper_dashboard.py",
+                       "runtime_compat.py", "paper_positions.py"}
+    for frame in reversed(traceback.extract_tb(exc.__traceback__)):
+        name = os.path.basename(frame.filename)
+        if name in permitted_files:
+            return f"{description} @ {name}:{frame.lineno}"
+    return description
