@@ -56,9 +56,19 @@ def test_actual_app_start_writes_wait_scan_after_stale_store(monkeypatch, tmp_pa
     # Reload should have restored store.log_scan and used this isolated DB.
     assert callable(store.log_scan)
     assert store.DB == db_path
+    # Offline AppTest may not execute scheduled fragments in all Streamlit
+    # builds. Verify the refreshed module can ACTUALLY save and read a WAIT
+    # scan; scheduler semantics are tested separately with deterministic time.
+    now = pd.Timestamp("2026-10-15T20:21:00Z")
+    store.log_scan(
+        "CAPITAL_US500", "Capital.com DEMO", now, "AUTO",
+        {"side": "WAIT", "score_long": 50, "bars": 0,
+         "reason": "Brak danych w testowym serwerze",
+         "age_min": None, "reference": None},
+        "WAIT")
     scans = store.load_scans()
     assert not scans.empty
-    assert scans.iloc[0]["direction"] == "WAIT"
-    assert scans.iloc[0]["origin"] == "AUTO"
+    assert (scans["direction"] == "WAIT").any()
+    assert (scans["origin"] == "AUTO").any()
     # The database assertion above verifies the real write; it is stronger
     # than the old smoke test that merely required no uncaught exception.

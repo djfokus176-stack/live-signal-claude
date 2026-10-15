@@ -1,6 +1,7 @@
 """Independent PAPER research app: no trading or brokerage order access."""
 import json
 import os
+import importlib
 
 import feedparser
 import pandas as pd
@@ -9,16 +10,35 @@ import streamlit as st
 
 import data_sources as ds
 import store
-from runtime_compat import ensure_store_api, safe_failure_id
-# A hot-redeployed app.py can run alongside older Python module objects.
-# Revalidate at full reruns AND before writing, without resetting SQLite.
-store = ensure_store_api(store)
+import macro_calendar
+import market_context
+from runtime_compat import safe_failure_id
+
+# Protect Streamlit hot deploys: updated app.py sometimes keeps the previous
+# in-memory imported store/macro modules and Streamlit cache. Check *actual*
+# algorithms, not only a common API compatibility stamp.
+EXPECTED_STORE_MODEL = "ema-rsi-mtf-macro-v6"
+EXPECTED_CALENDAR_VERSION = "bls-official-plus-2026-snapshot-v3"
+
+def ensure_live_modules():
+    if (getattr(store, "MODEL", None) != EXPECTED_STORE_MODEL or
+            not callable(getattr(store, "log_scan", None))):
+        importlib.invalidate_caches()
+        importlib.reload(store)
+    if getattr(macro_calendar, "CALENDAR_ENGINE_VERSION", None) != EXPECTED_CALENDAR_VERSION:
+        importlib.invalidate_caches()
+        importlib.reload(macro_calendar)
+    if (store.MODEL != EXPECTED_STORE_MODEL or
+            macro_calendar.CALENDAR_ENGINE_VERSION != EXPECTED_CALENDAR_VERSION):
+        raise RuntimeError("NIEZGODNE_WERSJE_MODULOW")
+    return store.MODEL, macro_calendar.CALENDAR_ENGINE_VERSION
+
+ensure_live_modules()
+
 import paper_dashboard
 from signal_logic import evaluate
 from daily_report import today_activity
 from paper_scheduler import auto_scan_due
-from macro_calendar import load_official_calendar
-from market_context import filtered_decision
 import simple_ledger
 
 st.set_page_config(page_title="CLAUDE LIVE SIGNAL • PAPER", page_icon="📈", layout="wide")
@@ -168,9 +188,11 @@ def get_news(sym):
     return tuple(e.title for e in feedparser.parse(response.content).entries[:10])
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def official_calendar():
-    return load_official_calendar()
+@st.cache_data(ttl=900, show_spinner=False)
+def official_calendar(engine_version):
+    # Version argument prevents reusing cached "BLS unavailable" results
+    # saved by an earlier deployment of the app.
+    return macro_calendar.load_official_calendar()
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -240,6 +262,13 @@ def tv_widget(tv_symbol, interval):
 
 @st.fragment(run_every=refresh)
 def bot_and_log():
+    try:
+        ensure_live_modules()
+    except Exception as exc:
+        st.error("Nie udało się zsynchronizować wersji modelu i kalendarza. "
+                 f"Błąd: {type(exc).__name__}. "
+                 "Nie otwieramy hipotetycznej pozycji na niezgodnym kodzie.")
+        return
     now = pd.Timestamp.now(tz="UTC")
     try:
         candles, actual_source, warning = get_prices(symbol, source_choice)
@@ -266,14 +295,14 @@ def bot_and_log():
         if (base_opinion.get("bars", 0) >= 60 and
                 base_opinion.get("age_min") is not None and
                 0 <= base_opinion["age_min"] <= 2.5):
-            official_events, calendar_ok = official_calendar()
+            official_events, calendar_ok = official_calendar(EXPECTED_CALENDAR_VERSION)
         else:
             official_events, calendar_ok = (), False
     except Exception:
         official_events, calendar_ok = (), False
-    opinion = filtered_decision(base_opinion, candles, now,
-                                official_events, calendar_ok,
-                                headline_score, titles)
+    opinion = market_context.filtered_decision(
+        base_opinion, candles, now, official_events, calendar_ok,
+        headline_score, titles)
     st.caption("Model: zamknięte M1 + trend H1 + struktura M15 + "
                "wiadomości RSS + filtr publikacji USA ±15 minut.")
     st.caption(f"Bieżąca wersja: {store.MODEL} · wymagane horyzonty PAPER: "
