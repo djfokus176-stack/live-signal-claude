@@ -7,6 +7,8 @@ from contextlib import contextmanager
 
 import pandas as pd
 
+# Increment when a new app deployment requires a refreshed Python module.
+STORE_API_VERSION = 20261015
 DB = os.getenv("SIGNAL_DB", "signals_test.db")
 HORIZONS = (1, 3, 5, 15, 30, 60)
 MAX_GAP = pd.Timedelta(minutes=3)
