@@ -154,7 +154,7 @@ def verified_2026_snapshot():
     return events
 
 
-def load_official_calendar():
+def load_official_calendar(now=None):
     """Prefer official BLS ICS, then official BLS HTML, then dated 2026 snapshot.
 
     Fallback is not a claim of real-time confirmation; it exists solely to
@@ -186,7 +186,8 @@ def load_official_calendar():
     except (requests.RequestException, ValueError):
         # Last resort: carefully copied from BLS 2026 official schedule
         # and limited to the 2026 year. At year change this is invalid.
-        now = pd.Timestamp.now(tz="UTC")
+        now = (pd.Timestamp.now(tz="UTC") if now is None
+               else pd.Timestamp(now).tz_convert("UTC"))
         if now.year == 2026 and now.month in (10, 11, 12):
             events = verified_2026_snapshot()
             return sorted(set(fixed + events), key=lambda x: x[0]), True
