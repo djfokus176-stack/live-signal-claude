@@ -12,7 +12,7 @@ import data_sources as ds
 import store
 import macro_calendar
 import market_context
-from runtime_compat import safe_failure_id
+from runtime_compat import ensure_store_api, safe_failure_id
 
 # Protect Streamlit hot deploys: updated app.py sometimes keeps the previous
 # in-memory imported store/macro modules and Streamlit cache. Check *actual*
