@@ -119,9 +119,13 @@ def filtered_decision(base, bars, now, events, calendar_ok,
         elif answer["side"] == "SHORT" and value >= +0.25:
             veto(f"SHORT odrzucony: pozytywne wiadomości ({value:+.2f})")
     else:
-        answer["reasons"].append("RSS niedostępny: brak potwierdzenia nastroju")
-        if answer["side"] != "WAIT":
-            veto("WAIT: brak aktualnych wiadomości USA")
+        # The economic-release guard still vetoes entry ±15 min and whenever
+        # its schedule cannot be verified. RSS is *optional*; a temporary
+        # Google News outage must not kill all paper research for days.
+        answer["reasons"].append(
+            "RSS niedostępny — brak filtra tonu wiadomości; "
+            "obowiązują kalendarz makro i potwierdzenia M15/H1")
+        answer["news_checked"] = False
     answer["rationale"] = "; ".join(answer["reasons"])[:1200]
     if answer["side"] != "WAIT":
         answer["reason"] = f"{answer['side']}: M15/H1 + świece + wiadomości + kalendarz potwierdzone"
