@@ -66,8 +66,30 @@ def filtered_decision(base, bars, now, events, calendar_ok,
         answer["side"] = "WAIT"
         answer["reason"] = message
         answer["reasons"].append(message)
+    # Broker candles are a precondition for ANY macro/news decision. When
+    # Capital.com is closed over the weekend, calendar fetching is skipped
+    # and calendar_ok=False is intentional. Do not misdiagnose that as a BLS
+    # outage or compute H1/M15 from stale Friday prices.
+    age = answer.get("age_min")
+    if (age is None or age < -0.02 or age > 2.5 or
+            int(answer.get("bars") or 0) < 60):
+        when = pd.Timestamp(now).tz_convert("Europe/Warsaw")
+        weekend = when.weekday() == 5 or (when.weekday() == 6 and when.hour < 23)
+        detail = (f"ostatnia świeca sprzed {age:.0f} min"
+                  if age is not None else "brak świec brokera")
+        message = (
+            "WAIT: weekend / oczekiwanie na wznowienie notowań Capital.com "
+            if weekend else "WAIT: brak świeżych danych brokera "
+        ) + f"({detail}); nie analizujemy nieaktualnych cen"
+        answer["market_data_ok"] = False
+        answer["macro_checked"] = False
+        veto(message)
+        answer["rationale"] = "; ".join(answer["reasons"])[:1200]
+        return answer
     blocked, macro_note = macro_guard(now, events, calendar_ok)
     structure = market_structure(bars, now)
+    answer["market_data_ok"] = True
+    answer["macro_checked"] = True
     answer["reasons"].append(macro_note)
     answer["reasons"].append(structure["reason"])
     # Important: this is the ACTUAL trade-entry veto, not just UI text.
