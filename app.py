@@ -312,11 +312,28 @@ def bot_and_log():
     data_recent = age is not None and 0 <= age <= 2.5
     history_ok = data_recent and opinion["bars"] >= 60 and not (
         "Przerwa" in opinion["reason"])
-    st.metric("Stan danych", "Gotowe do analizy" if history_ok else
-              "Świece świeże, historia niepełna" if data_recent else
-              "Brak świeżych danych")
+    local_now = now.tz_convert("Europe/Warsaw")
+    weekend_hint = (local_now.weekday() == 5 or
+                    (local_now.weekday() == 6 and local_now.hour < 23))
+    status_label = ("Gotowe do analizy" if history_ok else
+                    "Świece świeże, historia niepełna" if data_recent else
+                    "Przerwa weekendowa / stare notowania" if weekend_hint else
+                    "Brak świeżych danych brokera")
+    st.metric("Stan danych", status_label)
     st.metric("Wiek świecy", f"{age:.1f} min" if age is not None else "—")
-    if opinion["side"] == "WAIT" and not history_ok:
+    if not data_recent:
+        if candles is not None and not candles.empty:
+            last_closed_pl = (pd.Timestamp(candles.index[-1]) +
+                              pd.Timedelta(minutes=1)).tz_convert(
+                                  "Europe/Warsaw").strftime("%d.%m.%Y %H:%M")
+            st.caption(f"Ostatnia potwierdzona świeca Capital.com: "
+                       f"{last_closed_pl} czasu polskiego. "
+                       "Wykres TradingView może mieć inne notowania.")
+        st.warning("Brak świeżych cen Capital.com: "
+                   "nie uruchamiamy nowych transakcji PAPER. "
+                   "To nie jest błąd kalendarza BLS. "
+                   "Po wznowieniu rynku bot musi zebrać nowe świece.")
+    elif opinion["side"] == "WAIT" and not history_ok:
         st.warning(opinion["reason"])
     st.session_state["claude_last_source_" + symbol] = actual_source
     if not candles.empty:
@@ -387,6 +404,7 @@ def bot_and_log():
         st.session_state["last_bot_v5"] = {
             "key": current_key, "analysis": result, "time": now.isoformat(),
             "saved": saved, "message": issue, "origin": origin,
+            "model": store.MODEL,
         }
 
     if auto_paper:
@@ -401,7 +419,8 @@ def bot_and_log():
         st.caption("AUTO PAPER wyłączony — tylko przycisk ręczny.")
 
     previous = st.session_state.get("last_bot_v5")
-    if previous and previous.get("key") == current_key:
+    if (previous and previous.get("key") == current_key and
+            previous.get("model") == store.MODEL):
         assessed = previous["analysis"]
         direction = assessed["side"]
         origin_text = "AUTO" if previous["origin"] == "AUTO" else "RĘCZNY"
